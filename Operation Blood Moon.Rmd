@@ -1,0 +1,146 @@
+---
+title: "PBMC Flex"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(Seurat)
+library(BPCells)
+library(tidyverse)
+# needs to be set for large dataset analysis
+options(future.globals.maxSize = 1e9)
+
+# get a list of all the .h5 files exported from CellRanger
+files <- list.files("data/input", recursive = TRUE, 
+  full.names = TRUE) %>% 
+  # ONLY include the "sample_filtered_feature_bc_matrix.h5" files, 
+  # ignore all others
+  .[str_detect(., "sample_filtered_feature_bc_matrix.h5")]
+
+# convert file names vector to a dataframe containing the full file names
+# as well as the corresponding GEM and Sample name
+files_df <- tibble(Files = files) %>% 
+  mutate(GEM = str_extract(Files, "GEM.")) %>% 
+  mutate(Sample = str_extract(Files, "MP-\\d\\d*"))
+
+# read in one h5 file, create a Seurat object, add metadata
+# the function takes a single row of a data frame
+#     the data frame should include the file name, the GEM, and the Sample
+# add GEM and Sample to the meta.data of the resulting Seurat object
+read_one_file <- function(files_df_row) {
+  one_file <- Read10X_h5(files_df_row$Files) %>% CreateSeuratObject()
+  one_file@meta.data <- one_file@meta.data %>% 
+    mutate(GEM = files_df_row$GEM, Sample = files_df_row$Sample) 
+  
+  one_file
+}
+
+# use the BPCells package to put a Seurat object on disk to save memory
+put_on_disk <- function(obj) {
+  sample_id <- obj@meta.data$Sample[1]
+  
+  write_matrix_dir(mat = obj[["RNA"]]$counts, dir = paste0('data/temp/', sample_id))
+  counts.mat <- open_matrix_dir(dir = paste0('data/temp/', sample_id))
+  obj[["RNA"]]$counts <- counts.mat
+  
+  obj  
+}
+
+# read and combine all four GEM files for 1 sample
+# Each sample is split across the 4 GEMs
+# Given a sample name (e.g. "MP-1"), this function reads the 
+# 4 h5 files for the sample (from each GEM) and combines them
+# Then it puts the object on disk to save memory
+read_one_sample <- function(sample) {
+  # filter for the files just for one sample
+  one_sample <- files_df %>% 
+    filter(Sample == sample)
+  
+  # read in all 4 GEMs for one sample
+  one_sample_list <- list(
+    read_one_file(one_sample[1,]),
+    read_one_file(one_sample[2,]),
+    read_one_file(one_sample[3,]),
+    read_one_file(one_sample[4,])
+  )
+  
+  # merge together the four samples
+  one_sample_merged <- merge(
+                    # select first list element
+                    one_sample_list[[1]],
+                    # merge with every element except the first
+                    one_sample_list[-1], 
+  add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
+                    )
+  
+  # JoinLayers converts from one "counts layer" per GEM
+  # to one per sample
+  one_sample_merged %>% 
+    JoinLayers() %>% 
+    put_on_disk()
+}
+
+# test code to make sure each function works
+# sample_1 <- read_one_sample("MP-1")
+# sample_2 <- read_one_sample("MP-2")
+# test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
+
+# Read in every sample
+# This results in a list of seurat objects (one per sample)
+ALL_OF_THEM <- lapply(unique(files_df$Sample), read_one_sample)
+
+# save list of seurat objects
+write_rds(ALL_OF_THEM, "rds_files/01-list_of_samples.rds")
+
+# Combine list of seurat objects into a single Seurat object
+all_of_them_merged <- merge(
+                    # select first list element
+                    ALL_OF_THEM[[1]],
+                    # merge with every element except the first
+                    ALL_OF_THEM[-1], 
+  add.cell.ids =  unique(files_df$Sample)
+                    )
+# Normalize and find variable features
+all_of_them_merged <- NormalizeData(all_of_them_merged)
+all_of_them_merged <- FindVariableFeatures(all_of_them_merged)
+
+# save merged seurat object
+write_rds(all_of_them_merged, "rds_files/02-merged.rds")
+```
+
+
+
+```{r}
+# create a "sketch" containing `ncells` cells per sample
+# this takes a long time
+sketch <- SketchData(
+  object = all_of_them_merged,
+  ncells = 1000,
+  method = "LeverageScore",
+  sketched.assay = "sketch"
+)
+
+# save sketch
+write_rds(sketch, "rds_files/03-sketch-raw.rds")
+
+# switch to analyzing the full dataset (on-disk)
+DefaultAssay(sketch) <- "RNA"
+# switch to analyzing the sketched dataset (in-memory)
+DefaultAssay(sketch) <- "sketch"
+
+# do a bunch of processing on the sketch
+sketch <- FindVariableFeatures(sketch)
+sketch <- ScaleData(sketch)
+sketch <- RunPCA(sketch)
+sketch <- FindNeighbors(sketch, dims = 1:50)
+sketch <- FindClusters(sketch, resolution = 2)
+sketch <- RunUMAP(sketch, dims = 1:50, return.model = T)
+
+# save processed sketch
+write_rds(sketch, "rds_files/04-sketch-final.rds")
+
+DimPlot(sketch, label = T, label.size = 3, reduction = "umap") + NoLegend()
+```

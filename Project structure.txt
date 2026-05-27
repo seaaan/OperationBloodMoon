@@ -1,0 +1,16 @@
+Project Structure
+
+data/
+    input/
+        # h5 files exported from Cell Ranger
+        # 4 files per sample (1 in each GEM)
+        GEM1, GEM2, GEM3, GEM4
+            MP-1, MP-2, ...
+              sample_filtered_feature_bc_matrix.h5
+    temp/
+        # Location of temporary files created by BPCells 
+        # So it doesn't all have to live in memory
+        # One folder per sample
+        MP-1, MP-2, ...
+    rds_files/
+        # Location of rds files (Seurat objects etc)
