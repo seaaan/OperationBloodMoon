@@ -32,8 +32,9 @@ files_df <- tibble(Files = files) %>%
 # add GEM and Sample to the meta.data of the resulting Seurat object
 read_one_file <- function(files_df_row) {
   one_file <- Read10X_h5(files_df_row$Files) %>% CreateSeuratObject()
-  one_file@meta.data <- one_file@meta.data %>% 
-    mutate(GEM = files_df_row$GEM, Sample = files_df_row$Sample) 
+  # add metadata
+  one_file$GEM <- files_df_row$GEM
+  one_file$Sample <- files_df_row$Sample
   
   one_file
 }
@@ -93,7 +94,7 @@ read_one_sample <- function(sample) {
 ALL_OF_THEM <- lapply(unique(files_df$Sample), read_one_sample)
 
 # save list of seurat objects
-write_rds(ALL_OF_THEM, "rds_files/01-list_of_samples.rds")
+write_rds(ALL_OF_THEM, "data/rds_files/01-list_of_samples.rds")
 
 # Combine list of seurat objects into a single Seurat object
 all_of_them_merged <- merge(
@@ -108,7 +109,7 @@ all_of_them_merged <- NormalizeData(all_of_them_merged)
 all_of_them_merged <- FindVariableFeatures(all_of_them_merged)
 
 # save merged seurat object
-write_rds(all_of_them_merged, "rds_files/02-merged.rds")
+write_rds(all_of_them_merged, "data/rds_files/02-merged.rds")
 ```
 
 
@@ -120,11 +121,19 @@ sketch <- SketchData(
   object = all_of_them_merged,
   ncells = 1000,
   method = "LeverageScore",
-  sketched.assay = "sketch"
+  sketched.assay = "sketch",
+  # see comment below explaining this next line 
+  features = VariableFeatures(all_of_them_merged)
 )
 
+# we were getting this warning/error: "No variable features were found in data.1. Falling back to variable features from counts.1"
+# In this link, it says if you have more than 5000 features total, it triggers that warning
+# https://github.com/satijalab/seurat/issues/7171
+# To remove the warning, add the line specifying which features are variable
+# but then you get a new warning: LeverageScore failed on full matrix, retrying with same data (no zero-variance features found).
+
 # save sketch
-write_rds(sketch, "rds_files/03-sketch-raw.rds")
+write_rds(sketch, "data/rds_files/03-sketch-raw.rds")
 
 # switch to analyzing the full dataset (on-disk)
 DefaultAssay(sketch) <- "RNA"
@@ -140,7 +149,7 @@ sketch <- FindClusters(sketch, resolution = 2)
 sketch <- RunUMAP(sketch, dims = 1:50, return.model = T)
 
 # save processed sketch
-write_rds(sketch, "rds_files/04-sketch-final.rds")
+write_rds(sketch, "data/rds_files/04-sketch-final.rds")
 
 DimPlot(sketch, label = T, label.size = 3, reduction = "umap") + NoLegend()
 ```
