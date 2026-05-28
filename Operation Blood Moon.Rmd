@@ -70,12 +70,12 @@ read_one_sample <- function(sample) {
   
   # merge together the four samples
   one_sample_merged <- merge(
-                    # select first list element
-                    one_sample_list[[1]],
-                    # merge with every element except the first
-                    one_sample_list[-1], 
-  add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
-                    )
+                        # select first list element
+                        one_sample_list[[1]],
+                        # merge with every element except the first
+                        one_sample_list[-1], 
+                        add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
+                        )
   
   # JoinLayers converts from one "counts layer" per GEM
   # to one per sample
@@ -85,9 +85,9 @@ read_one_sample <- function(sample) {
 }
 
 # test code to make sure each function works
-# sample_1 <- read_one_sample("MP-1")
-# sample_2 <- read_one_sample("MP-2")
-# test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
+sample_1 <- read_one_sample("MP-1")
+sample_2 <- read_one_sample("MP-2")
+test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
 
 # Read in every sample
 # This results in a list of seurat objects (one per sample)
@@ -98,12 +98,12 @@ write_rds(ALL_OF_THEM, "data/rds_files/01-list_of_samples.rds")
 
 # Combine list of seurat objects into a single Seurat object
 all_of_them_merged <- merge(
-                    # select first list element
-                    ALL_OF_THEM[[1]],
-                    # merge with every element except the first
-                    ALL_OF_THEM[-1], 
-  add.cell.ids =  unique(files_df$Sample)
-                    )
+                        # select first list element
+                        ALL_OF_THEM[[1]],
+                        # merge with every element except the first
+                        ALL_OF_THEM[-1], 
+                        add.cell.ids =  unique(files_df$Sample)
+                        )
 # Normalize and find variable features
 all_of_them_merged <- NormalizeData(all_of_them_merged)
 all_of_them_merged <- FindVariableFeatures(all_of_them_merged)
