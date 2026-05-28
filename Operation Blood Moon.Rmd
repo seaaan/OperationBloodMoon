@@ -76,6 +76,7 @@ read_one_sample <- function(sample) {
                         one_sample_list[-1], 
                         add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
                        )
+
   
   # JoinLayers converts from one "counts layer" per GEM
   # to one per sample
@@ -85,9 +86,9 @@ read_one_sample <- function(sample) {
 }
 
 # test code to make sure each function works
-# sample_1 <- read_one_sample("MP-1")
-# sample_2 <- read_one_sample("MP-2")
-# test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
+sample_1 <- read_one_sample("MP-1")
+sample_2 <- read_one_sample("MP-2")
+test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
 
 # Read in every sample
 # This results in a list of seurat objects (one per sample)
