@@ -70,12 +70,12 @@ read_one_sample <- function(sample) {
   
   # merge together the four samples
   one_sample_merged <- merge(
-                    # select first list element
-                    one_sample_list[[1]],
-                    # merge with every element except the first
-                    one_sample_list[-1], 
-  add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
-                    )
+                        # select first list element
+                        one_sample_list[[1]],
+                        # merge with every element except the first
+                        one_sample_list[-1], 
+                        add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
+                       )
   
   # JoinLayers converts from one "counts layer" per GEM
   # to one per sample
@@ -91,25 +91,25 @@ read_one_sample <- function(sample) {
 
 # Read in every sample
 # This results in a list of seurat objects (one per sample)
-ALL_OF_THEM <- lapply(unique(files_df$Sample), read_one_sample)
+all_samples <- lapply(unique(files_df$Sample), read_one_sample)
 
 # save list of seurat objects
-write_rds(ALL_OF_THEM, "data/rds_files/01-list_of_samples.rds")
+write_rds(all_samples, "data/rds_files/01-list_of_samples.rds")
 
 # Combine list of seurat objects into a single Seurat object
-all_of_them_merged <- merge(
-                    # select first list element
-                    ALL_OF_THEM[[1]],
-                    # merge with every element except the first
-                    ALL_OF_THEM[-1], 
-  add.cell.ids =  unique(files_df$Sample)
-                    )
+all_samples_merged <- merge(
+                        # select first list element
+                        all_samples[[1]],
+                        # merge with every element except the first
+                        all_samples[-1], 
+                        add.cell.ids =  unique(files_df$Sample)
+                        )
 # Normalize and find variable features
-all_of_them_merged <- NormalizeData(all_of_them_merged)
-all_of_them_merged <- FindVariableFeatures(all_of_them_merged)
+all_samples_merged <- NormalizeData(all_samples_merged) %>%
+                      FindVariableFeatures()
 
 # save merged seurat object
-write_rds(all_of_them_merged, "data/rds_files/02-merged.rds")
+write_rds(all_samples_merged, "data/rds_files/02-merged.rds")
 ```
 
 
