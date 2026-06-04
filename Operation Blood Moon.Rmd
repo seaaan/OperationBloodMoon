@@ -25,6 +25,10 @@ files <- list.files("data/input", recursive = TRUE,
 files_df <- tibble(Files = files) %>% 
   mutate(GEM = str_extract(Files, "GEM.")) %>% 
   mutate(Sample = str_extract(Files, "MP-\\d\\d*"))
+```
+
+```{r functions}
+# THIS CHUNK INCLUDES FUNCTIONS TO READ IN THE RAW FILES
 
 # read in one h5 file, create a Seurat object, add metadata
 # the function takes a single row of a data frame
@@ -89,68 +93,73 @@ read_one_sample <- function(sample) {
 # sample_1 <- read_one_sample("MP-1")
 # sample_2 <- read_one_sample("MP-2")
 # test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
+```
+
+```{r}
+# THIS CHUNK READS IN THE RAW FILES AND MERGES THEM INTO A SEURAT OBJECT
 
 # Read in every sample
 # This results in a list of seurat objects (one per sample)
-ALL_OF_THEM <- lapply(unique(files_df$Sample), read_one_sample)
+all_samples_list <- lapply(unique(files_df$Sample), read_one_sample)
 
 # save list of seurat objects
-write_rds(ALL_OF_THEM, "data/rds_files/01-list_of_samples.rds")
+write_rds(all_samples_list, "data/rds_files/01-list_of_samples.rds")
 
 #read in the saved list of files, not normed yet
-ALL_OF_THEM<-read_rds("data/rds_files/01-list_of_samples.rds")
+# all_samples_list<-read_rds("data/rds_files/01-list_of_samples.rds")
 
+```
+
+```{r}
+# THIS CHUNK MERGES THE LIST OF SEURAT OBJECTS INTO A SINGLE OBJECT
 
 # Combine list of seurat objects into a single Seurat object
-all_of_them_merged <- merge(
+all_samples_merged <- merge(
                     # select first list element
-                    ALL_OF_THEM[[1]],
+                    all_samples_list[[1]],
                     # merge with every element except the first
-                    ALL_OF_THEM[-1], 
+                    all_samples_list[-1], 
   add.cell.ids =  unique(files_df$Sample)
                         )
+```
+
+```{r}
+# THIS CHUNK CHECKS THE QC METRICS AND FILTERS OUT LOW QUALITY CELLS
 
 # check QC metrics
 
 # The [[ operator can add columns to object metadata. This is a great place to stash QC stats
-all_of_them_merged[["percent.mt"]] <- PercentageFeatureSet(all_of_them_merged, pattern = "^MT-")
-
-
-
+all_samples_merged[["percent.mt"]] <- PercentageFeatureSet(all_samples_merged, pattern = "^MT-")
 
 # Visualize QC metrics as a violin plot
 # have some cells with  really high transcript counts, most cells have info about ~2k genes, a few cells have a higher percentage of mt transcripts
 
-VlnPlot(all_of_them_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+VlnPlot(all_samples_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
 
 #dropoff at about 20k
-all_of_them_merged$nCount_RNA  %>%  
+all_samples_merged$nCount_RNA  %>%  
     hist(breaks= 100)
 
 #lowest counts are around 450
-sort(all_of_them_merged$nCount_RNA) %>% tail(n = 20)
+sort(all_samples_merged$nCount_RNA) %>% tail(n = 20)
 #highest are around 140k
-sort(all_of_them_merged$nCount_RNA) %>% head(n = 20)
+sort(all_samples_merged$nCount_RNA) %>% head(n = 20)
 
-all_of_them_merged$nFeature_RNA  %>%  
+all_samples_merged$nFeature_RNA  %>%  
     hist(breaks= 100)
 
 #highest is around 8500
-sort(all_of_them_merged$nFeature_RNA) %>% tail(n = 20)
+sort(all_samples_merged$nFeature_RNA) %>% tail(n = 20)
 #lowest are around 40
-sort(all_of_them_merged$nFeature_RNA) %>% head(n = 20)
+sort(all_samples_merged$nFeature_RNA) %>% head(n = 20)
 
 
 # FeatureScatter is typically used to visualize feature-feature relationships, but can be used
 # for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(subset(all_samples_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "percent.mt")
 
 
-
-
-plot1 <- FeatureScatter(subset(all_of_them_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "percent.mt")
-
-
-plot2 <- FeatureScatter(subset(all_of_them_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2 <- FeatureScatter(subset(all_samples_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
 plot1 + plot2
 
 
@@ -158,18 +167,24 @@ plot1 + plot2
 #subset for nCount, nFeature and percent.mt. Tutorial does not have an nCount subset but we are adding one because we don't want info from the cells that only have a few transcripts read
 #our cutoffs are based on the histograms made above
 
-all_of_them_merged_subset <- subset(all_of_them_merged, subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 10 & nCount_RNA < 2E4)
+all_samples_merged_subset <- subset(all_samples_merged, 
+    subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 10 & nCount_RNA < 2E4)
+
+# save merged seurat object
+write_rds(all_samples_merged_subset, "data/rds_files/02-merged-subset.rds")
 
 #check violins again after subsetting
-VlnPlot(all_of_them_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+VlnPlot(all_samples_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
 
 #comparing our original and subset objects, we've removed about 5k cells, not much!! Lol
-all_of_them_merged_subset
-all_of_them_merged
+all_samples_merged_subset
+all_samples_merged
+```
 
 
 
-
+```{r}
+# THIS CHUNK RUNS SCTRANSFORM
 
 #instead of normalizeData we're trying the cooler sctransform which is better because...it accounts for sequencing depth?
 # we are not regressing out any of our variables, we aren't sure if they are important. We ran out of memory on Sean's 16gb machine doing this.
@@ -178,7 +193,7 @@ all_of_them_merged
 # needs to be set for large dataset analysis, SCTransform did not work with this set to 1E9
 options(future.globals.maxSize = 5e9)
 
-all_of_them_merged_subset_norm<-SCTransform(all_of_them_merged_subset,
+all_samples_merged_subset_norm<-SCTransform(all_samples_merged_subset,
     vars.to.regress = NULL, verbose = TRUE, conserve.memory = TRUE)
 
 # ended up failing after 5 samples (I think) with this error: 
@@ -196,19 +211,17 @@ all_of_them_merged_subset_norm<-SCTransform(all_of_them_merged_subset,
 
 
 #This is what we did the first time for normalization
-all_of_them_merged <- NormalizeData(all_of_them_merged, normalization.method = "LogNormalize", scale.factor = 10000)
-
-
-
-
+all_samples_merged <- NormalizeData(all_samples_merged, normalization.method = "LogNormalize", scale.factor = 10000)
 
 # save merged seurat object
-write_rds(all_of_them_merged, "data/rds_files/02-merged.rds")
+write_rds(all_samples_merged, "data/rds_files/02-merged.rds")
 ```
 
 
 
 ```{r}
+# THIS CHUNK CREATES A SKETCH AND DOES SOME PROCESSING
+
 # create a "sketch" containing `ncells` cells per sample
 # this takes a long time
 sketch <- SketchData(
