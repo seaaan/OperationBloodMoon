@@ -267,3 +267,7 @@ DimPlot(sketch, label = T, label.size = 3, reduction = "pca", group.by = "Sample
 
 #Now you do integration
 ```
+
+```{r}
+sessionInfo()
+```
