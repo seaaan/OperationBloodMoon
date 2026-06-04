@@ -11,7 +11,7 @@ library(Seurat)
 library(BPCells)
 library(tidyverse)
 # needs to be set for large dataset analysis
-options(future.globals.maxSize = 1e9)
+options(future.globals.maxSize = 5e9)
 
 # get a list of all the .h5 files exported from CellRanger
 files <- list.files("data/input", recursive = TRUE, 
@@ -92,25 +92,118 @@ read_one_sample <- function(sample) {
 
 # Read in every sample
 # This results in a list of seurat objects (one per sample)
-all_samples <- lapply(unique(files_df$Sample), read_one_sample)
+ALL_OF_THEM <- lapply(unique(files_df$Sample), read_one_sample)
 
 # save list of seurat objects
-write_rds(all_samples, "data/rds_files/01-list_of_samples.rds")
+write_rds(ALL_OF_THEM, "data/rds_files/01-list_of_samples.rds")
+
+#read in the saved list of files, not normed yet
+ALL_OF_THEM<-read_rds("data/rds_files/01-list_of_samples.rds")
+
 
 # Combine list of seurat objects into a single Seurat object
-all_samples_merged <- merge(
-                        # select first list element
-                        all_samples[[1]],
-                        # merge with every element except the first
-                        all_samples[-1], 
-                        add.cell.ids =  unique(files_df$Sample)
+all_of_them_merged <- merge(
+                    # select first list element
+                    ALL_OF_THEM[[1]],
+                    # merge with every element except the first
+                    ALL_OF_THEM[-1], 
+  add.cell.ids =  unique(files_df$Sample)
                         )
-# Normalize and find variable features
-all_samples_merged <- NormalizeData(all_samples_merged) %>%
-                      FindVariableFeatures()
+
+# check QC metrics
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+all_of_them_merged[["percent.mt"]] <- PercentageFeatureSet(all_of_them_merged, pattern = "^MT-")
+
+
+
+
+# Visualize QC metrics as a violin plot
+# have some cells with  really high transcript counts, most cells have info about ~2k genes, a few cells have a higher percentage of mt transcripts
+
+VlnPlot(all_of_them_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+#dropoff at about 20k
+all_of_them_merged$nCount_RNA  %>%  
+    hist(breaks= 100)
+
+#lowest counts are around 450
+sort(all_of_them_merged$nCount_RNA) %>% tail(n = 20)
+#highest are around 140k
+sort(all_of_them_merged$nCount_RNA) %>% head(n = 20)
+
+all_of_them_merged$nFeature_RNA  %>%  
+    hist(breaks= 100)
+
+#highest is around 8500
+sort(all_of_them_merged$nFeature_RNA) %>% tail(n = 20)
+#lowest are around 40
+sort(all_of_them_merged$nFeature_RNA) %>% head(n = 20)
+
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+
+
+
+plot1 <- FeatureScatter(subset(all_of_them_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "percent.mt")
+
+
+plot2 <- FeatureScatter(subset(all_of_them_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+
+
+#subset for nCount, nFeature and percent.mt. Tutorial does not have an nCount subset but we are adding one because we don't want info from the cells that only have a few transcripts read
+#our cutoffs are based on the histograms made above
+
+all_of_them_merged_subset <- subset(all_of_them_merged, subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 10 & nCount_RNA < 2E4)
+
+#check violins again after subsetting
+VlnPlot(all_of_them_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+#comparing our original and subset objects, we've removed about 5k cells, not much!! Lol
+all_of_them_merged_subset
+all_of_them_merged
+
+
+
+
+
+#instead of normalizeData we're trying the cooler sctransform which is better because...it accounts for sequencing depth?
+# we are not regressing out any of our variables, we aren't sure if they are important. We ran out of memory on Sean's 16gb machine doing this.
+#Running future::plan("sequential" didn't help)
+
+# needs to be set for large dataset analysis, SCTransform did not work with this set to 1E9
+options(future.globals.maxSize = 5e9)
+
+all_of_them_merged_subset_norm<-SCTransform(all_of_them_merged_subset,
+    vars.to.regress = NULL, verbose = TRUE, conserve.memory = TRUE)
+
+# ended up failing after 5 samples (I think) with this error: 
+# Error: cannot allocate vector of size 72.1 Mb
+# I think that means it ran out of RAM
+# I'll try again tonight after removing the other objects from memory and closing all other programs
+
+
+# STOPPED HERE 2026-06-03
+
+
+
+
+
+
+
+#This is what we did the first time for normalization
+all_of_them_merged <- NormalizeData(all_of_them_merged, normalization.method = "LogNormalize", scale.factor = 10000)
+
+
+
+
 
 # save merged seurat object
-write_rds(all_samples_merged, "data/rds_files/02-merged.rds")
+write_rds(all_of_them_merged, "data/rds_files/02-merged.rds")
 ```
 
 
@@ -151,6 +244,13 @@ sketch <- RunUMAP(sketch, dims = 1:50, return.model = T)
 
 # save processed sketch
 write_rds(sketch, "data/rds_files/04-sketch-final.rds")
+sketch<-read_rds("data/rds_files/04-sketch-final.rds")
 
-DimPlot(sketch, label = T, label.size = 3, reduction = "umap") + NoLegend()
+DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Sample") + NoLegend()
+
+
+DimPlot(sketch, label = T, label.size = 3, reduction = "pca", group.by = "Sample") + NoLegend()
+
+
+#Now you do integration
 ```
