@@ -124,6 +124,37 @@ all_samples_merged <- merge(
 ```
 
 ```{r}
+# THIS CHUNK ADDS METADATA (PTID AND PHASE) TO THE SAMPLES
+
+# To add metadata with AddMetaData, you need a dataframe with rownames that match 
+# the rownames from the SeuratObject 
+# Steps:
+# 1. Load metadata from file
+metadata <- readxl::read_excel("data/PBMC-multilab plan for Innovation Lab_9feb26.xlsx", sheet = "Prlic") %>% 
+    mutate(Phase = str_sub(`Sample ID`, 8, 8),
+        Ptid = str_sub(`Sample ID`, 1, 7))
+
+# 2. Select columns you want to add 
+to_add <- metadata %>% 
+    select(Sample = `Tube sample`, Ptid, Phase) %>% 
+    as.data.frame()
+
+# 3. Get the metadata out of the Seurat object because it has the rownames
+old_meta_data <- all_samples_merged@meta.data %>% 
+    mutate(Rownames = rownames(.))
+
+# 4. Merge the two metadata objects by sample. This associates all your new metadata
+# with the appropriate cell identifiers in the rownames. Make sure to keep the rownames
+# which tidyverse removes
+new_meta_data <- merge(old_meta_data, to_add, by = "Sample")
+rownames(new_meta_data) <- new_meta_data$Rownames
+new_meta_data <- select(new_meta_data, -Rownames)
+
+# 5. Add the new metadata to the Seurat Object
+all_samples_merged <- AddMetaData(all_samples_merged, new_meta_data)
+```
+
+```{r}
 # THIS CHUNK CHECKS THE QC METRICS AND FILTERS OUT LOW QUALITY CELLS
 
 # check QC metrics
@@ -135,6 +166,15 @@ all_samples_merged[["percent.mt"]] <- PercentageFeatureSet(all_samples_merged, p
 # have some cells with  really high transcript counts, most cells have info about ~2k genes, a few cells have a higher percentage of mt transcripts
 
 VlnPlot(all_samples_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+VlnPlot(all_samples_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "GEM")
+ggsave("images/violins_by_gem.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_samples_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Phase")
+ggsave("images/violins_by_phase.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_samples_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Ptid")
+ggsave("images/violins_by_ptid.png", width = 8, height = 4, dpi = 600)
 
 #dropoff at about 20k
 all_samples_merged$nCount_RNA  %>%  
@@ -156,10 +196,10 @@ sort(all_samples_merged$nFeature_RNA) %>% head(n = 20)
 
 # FeatureScatter is typically used to visualize feature-feature relationships, but can be used
 # for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
-plot1 <- FeatureScatter(subset(all_samples_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot1 <- FeatureScatter(all_samples_merged, feature1 = "nCount_RNA", feature2 = "percent.mt")
 
 
-plot2 <- FeatureScatter(subset(all_samples_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot2 <- FeatureScatter(all_samples_merged, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
 plot1 + plot2
 
 
@@ -175,6 +215,16 @@ write_rds(all_samples_merged_subset, "data/rds_files/02-merged-subset.rds")
 
 #check violins again after subsetting
 VlnPlot(all_samples_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+VlnPlot(all_samples_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "GEM")
+ggsave("images/violins_by_gem_subset.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_samples_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Phase")
+ggsave("images/violins_by_phase_subset.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_samples_merged_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Ptid")
+ggsave("images/violins_by_ptid_subset.png", width = 8, height = 4, dpi = 600)
+
 
 #comparing our original and subset objects, we've removed about 5k cells, not much!! Lol
 all_samples_merged_subset
@@ -193,8 +243,8 @@ all_samples_merged
 # needs to be set for large dataset analysis, SCTransform did not work with this set to 1E9
 options(future.globals.maxSize = 5e9)
 
-all_samples_merged_subset_norm<-SCTransform(all_samples_merged_subset,
-    vars.to.regress = NULL, verbose = TRUE, conserve.memory = TRUE)
+#all_samples_merged_subset_norm<-SCTransform(all_samples_merged_subset,
+#    vars.to.regress = NULL, verbose = TRUE, conserve.memory = TRUE)
 
 # ended up failing after 5 samples (I think) with this error: 
 # Error: cannot allocate vector of size 72.1 Mb
@@ -202,19 +252,11 @@ all_samples_merged_subset_norm<-SCTransform(all_samples_merged_subset,
 # I'll try again tonight after removing the other objects from memory and closing all other programs
 
 
-# STOPPED HERE 2026-06-03
-
-
-
-
-
-
-
 #This is what we did the first time for normalization
-all_samples_merged <- NormalizeData(all_samples_merged, normalization.method = "LogNormalize", scale.factor = 10000)
+all_samples_merged_subset <- NormalizeData(all_samples_merged_subset, normalization.method = "LogNormalize", scale.factor = 10000)
 
 # save merged seurat object
-write_rds(all_samples_merged, "data/rds_files/02-merged.rds")
+write_rds(all_samples_merged_subset, "data/rds_files/02-merged.rds")
 ```
 
 
@@ -222,15 +264,18 @@ write_rds(all_samples_merged, "data/rds_files/02-merged.rds")
 ```{r}
 # THIS CHUNK CREATES A SKETCH AND DOES SOME PROCESSING
 
+# Need to find variable features before creating sketch
+all_samples_merged_subset <- FindVariableFeatures(all_samples_merged_subset, layer = "data")
+
 # create a "sketch" containing `ncells` cells per sample
 # this takes a long time
 sketch <- SketchData(
-  object = all_of_them_merged,
+  object = all_samples_merged_subset,
   ncells = 1000,
   method = "LeverageScore",
   sketched.assay = "sketch",
   # see comment below explaining this next line 
-  features = VariableFeatures(all_of_them_merged)
+  features = VariableFeatures(all_samples_merged_subset)
 )
 
 # we were getting this warning/error: "No variable features were found in data.1. Falling back to variable features from counts.1"
@@ -258,14 +303,46 @@ sketch <- RunUMAP(sketch, dims = 1:50, return.model = T)
 # save processed sketch
 write_rds(sketch, "data/rds_files/04-sketch-final.rds")
 sketch<-read_rds("data/rds_files/04-sketch-final.rds")
+```
+
+```{r}
+# THIS CHUNK PLOTS UMAPS OF THE SKETCH COLORED BY VARIOUS CO-VARIATES
 
 DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Sample") + NoLegend()
+ggsave("images/umap_by_sample_preintegration.png", width = 6, height = 4, dpi = 600)
 
+DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Phase") + NoLegend()
+ggsave("images/umap_by_phase_preintegration.png", width = 6, height = 4, dpi = 600)
 
-DimPlot(sketch, label = T, label.size = 3, reduction = "pca", group.by = "Sample") + NoLegend()
+DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Ptid") + NoLegend()
+ggsave("images/umap_by_ptid_preintegration.png", width = 6, height = 4, dpi = 600)
 
+DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "GEM") + NoLegend()
+ggsave("images/umap_by_gem_preintegration.png", width = 6, height = 4, dpi = 600)
 
-#Now you do integration
+# Tried to facet by Ptid with "split.by" argument of DimPlot, but it was really slow
+# instead here extract the UMAP from the Seurat object and the metadata and plot separately
+umap <- as.data.frame(Embeddings(sketch, reduction = "umap")) %>%
+    merge(sketch@meta.data, by = "row.names")
+
+ggplot(umap, aes(umap_1, umap_2, color = seurat_clusters)) + facet_wrap(~Ptid) + geom_point() + ylim(0, 2.5) + xlim(-2.5, 0)
+```
+
+```{r}
+# THIS CHUNK DOES INTEGRATION ACROSS SAMPLES
+
+integrated <- IntegrateLayers(object = sketch, method = CCAIntegration,
+    orig.reduction = "pca", new.reduction = "integrated.cca", verbose = FALSE)
+integrated <- RunUMAP(integrated, reduction = "integrated.cca", dims = 1:30, reduction.name = "umap.cca")
+
+p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Phase") + ggtitle("Before CCA integration")
+p2 <- DimPlot(integrated, label = T, label.size = 3, reduction = "umap.cca", group.by = "Phase") + ggtitle("After CCA integration")
+
+p1 + p2
+ggsave("images/umap_by_phase_compare_integration.png", width = 8, height = 4, dpi = 600)
+
+# STOPPED HERE 2026-06-18
+
 ```
 
 ```{r}
