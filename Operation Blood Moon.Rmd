@@ -335,6 +335,8 @@ integrated <- IntegrateLayers(object = sketch, method = CCAIntegration,
     orig.reduction = "pca", new.reduction = "integrated.cca", verbose = FALSE)
 integrated <- RunUMAP(integrated, reduction = "integrated.cca", dims = 1:30, reduction.name = "umap.cca")
 
+write_rds(integrated, "data/rds_files/05-CCA-integrated.rds")
+
 p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Phase") + ggtitle("Before CCA integration")
 p2 <- DimPlot(integrated, label = T, label.size = 3, reduction = "umap.cca", group.by = "Phase") + ggtitle("After CCA integration")
 
