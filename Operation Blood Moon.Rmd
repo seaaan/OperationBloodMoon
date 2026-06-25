@@ -259,7 +259,11 @@ all_samples_merged_subset <- NormalizeData(all_samples_merged_subset, normalizat
 write_rds(all_samples_merged_subset, "data/rds_files/02-merged.rds")
 ```
 
+```{r}
+# Read in merged seurat object
 
+read_rds("data/rds_files/02-merged.rds")
+```
 
 ```{r}
 # THIS CHUNK CREATES A SKETCH AND DOES SOME PROCESSING
