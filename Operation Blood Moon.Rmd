@@ -296,9 +296,12 @@ DefaultAssay(sketch) <- "sketch"
 sketch <- FindVariableFeatures(sketch)
 sketch <- ScaleData(sketch)
 sketch <- RunPCA(sketch)
-sketch <- FindNeighbors(sketch, dims = 1:50)
+sketch <- IntegrateLayers(object = sketch, method = CCAIntegration,
+    orig.reduction = "pca", new.reduction = "integrated.cca", verbose = FALSE)
+sketch <- FindNeighbors(sketch, reduction = "integrated.cca", dims = 1:50)
 sketch <- FindClusters(sketch, resolution = 2)
-sketch <- RunUMAP(sketch, dims = 1:50, return.model = T)
+sketch <- RunUMAP(sketch, reduction = "pca", dims = 1:50, return.model = T, reduction.name = "umap")
+sketch <- RunUMAP(sketch, reduction = "integrated.cca", dims = 1:50, reduction.name = "umap.cca")
 
 # save processed sketch
 write_rds(sketch, "data/rds_files/04-sketch-final.rds")
@@ -326,19 +329,10 @@ umap <- as.data.frame(Embeddings(sketch, reduction = "umap")) %>%
     merge(sketch@meta.data, by = "row.names")
 
 ggplot(umap, aes(umap_1, umap_2, color = seurat_clusters)) + facet_wrap(~Ptid) + geom_point() + ylim(0, 2.5) + xlim(-2.5, 0)
-```
 
-```{r}
-# THIS CHUNK DOES INTEGRATION ACROSS SAMPLES
-
-integrated <- IntegrateLayers(object = sketch, method = CCAIntegration,
-    orig.reduction = "pca", new.reduction = "integrated.cca", verbose = FALSE)
-integrated <- RunUMAP(integrated, reduction = "integrated.cca", dims = 1:30, reduction.name = "umap.cca")
-
-write_rds(integrated, "data/rds_files/05-CCA-integrated.rds")
-
+# Compare UMAP with integration or not
 p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Phase") + ggtitle("Before CCA integration")
-p2 <- DimPlot(integrated, label = T, label.size = 3, reduction = "umap.cca", group.by = "Phase") + ggtitle("After CCA integration")
+p2 <- DimPlot(sketch, label = T, label.size = 3, reduction = "umap.cca", group.by = "Phase") + ggtitle("After CCA integration")
 
 p1 + p2
 ggsave("images/umap_by_phase_compare_integration.png", width = 8, height = 4, dpi = 600)
