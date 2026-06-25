@@ -346,5 +346,42 @@ ggsave("images/umap_by_phase_compare_integration.png", width = 8, height = 4, dp
 ```
 
 ```{r}
+# THIS CHUNK DOES AZIMUTH CELL ANNOTATION
+
+# For demonstration, run on a subset of the cells
+# Select only those cells that have a seurat cluster (the "sketch" cells)
+x <- subset(sketch, !is.na(seurat_clusters))
+
+# Have to run JoinLayers before Azimuth or you get an error 
+x <- JoinLayers(x)
+
+# I don't know why but assay has to be "sketch" otherwise it breaks with 
+# a very obscure error message
+x <- AzimuthAPI::CloudAzimuth(x, assay = "sketch")
+
+head(x@meta.data)
+
+x@meta.data %>% count(azimuth_label) %>% arrange(desc(n))
+
+DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap.cca",
+    repel = TRUE) + NoLegend() + 
+    ggtitle("Azimuth labels on CCA-integrated UMAP")
+ggsave("images/umap_by_azimuth_cca_integration.png", width = 10, height = 6, dpi = 600)
+
+DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
+    repel = TRUE) + NoLegend() + 
+    ggtitle("Azimuth labels on un-integrated UMAP")
+ggsave("images/umap_by_azimuth_no_integration.png", width = 10, height = 6, dpi = 600)
+
+x@meta.data %>% ggplot(aes(x = azimuth_label, fill = factor(seurat_clusters))) + geom_bar() + coord_flip()
+
+x@meta.data %>% ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
+
+x@meta.data %>% filter(str_detect(azimuth_label, "T cell")) %>%  ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
+
+```
+
+
+```{r}
 sessionInfo()
 ```
