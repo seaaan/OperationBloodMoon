@@ -8,8 +8,9 @@ date: "`r Sys.Date()`"
 knitr::opts_chunk$set(echo = FALSE)
 
 library(Seurat)
-library(BPCells)
+library(BPCells) #need to install via github
 library(tidyverse)
+library(AzimuthAPI) # need to install via github with devtools or remotes
 # needs to be set for large dataset analysis
 options(future.globals.maxSize = 5e9)
 
@@ -309,6 +310,10 @@ sketch <- RunUMAP(sketch, reduction = "integrated.cca", dims = 1:50, reduction.n
 
 # save processed sketch
 write_rds(sketch, "data/rds_files/04-sketch-final.rds")
+
+```
+
+```{r read in processed sketch}
 sketch<-read_rds("data/rds_files/04-sketch-final.rds")
 ```
 
