@@ -1,0 +1,39 @@
+---
+title: "progress notes"
+author: "CNL"
+date: "2026-07-08"
+output: html_document
+---
+
+This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
+# 2026-07-08 group meeting
+Previous Leon says:
+In our group script, we have only used NormalizeData, not scTransform, because we don’t have enough computing power. RLC used Hyak to run scTransform though. 
+Then we made a sketch with just 1k cells, scaled the data and did FindVariableFeatures and made umaps.
+We did an integration on the sketch and did some umaps to compare integrated and non-integrated
+Last time we tested out using Azimuth to annotate cells.
+
+Do we use scTransform or NormalizeData?
+
+QP says that Eva was never able to get scTransform to work with mast (Gottardo software). We thought scTransform would be better since it is the newer package but it might not be practical
+
+It appears mast isn't supposed to be run on normalized data? 
+
+Here's the MAST paper https://pubmed.ncbi.nlm.nih.gov/26653891/
+
+We can ask Eva what has or hasn't worked.
+
+Getting BPcells to work to reduce the size of the normalized object is probably not worth it if we aren't going to use scTransform. We previously used BP cells to put the original Seurat object on disk to save memory.
+
+https://github.com/RGLab/MAST still works
+
+
+Integrate or not? We decided no.
+
+Pro: ?? Might 
+In the vignette they need do it because they compare control vs stimulated pbmc, which are very different. IE it leads to the SAME cells be slightly different because of the stim. The tell-tale sign in the umap when they color by stim or not and that shows that they are clearly separated based on that. Then when they color by cell type there are clearly multiple populations for each subtype.
+Con: we might lose some important variation
+
+Next step: project the analysis done on the sketch for the full data set
+
+First, we're changing the number of PCs to 30 based on the elbow plot that Quinn posted in slack. 

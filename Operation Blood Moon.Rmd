@@ -301,6 +301,9 @@ DefaultAssay(sketch) <- "sketch"
 sketch <- FindVariableFeatures(sketch)
 sketch <- ScaleData(sketch)
 sketch <- RunPCA(sketch)
+
+
+#now integrate
 sketch <- IntegrateLayers(object = sketch, method = CCAIntegration,
     orig.reduction = "pca", new.reduction = "integrated.cca", verbose = FALSE)
 sketch <- FindNeighbors(sketch, reduction = "integrated.cca", dims = 1:50)
