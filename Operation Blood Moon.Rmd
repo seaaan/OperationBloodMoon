@@ -301,7 +301,7 @@ DefaultAssay(sketch) <- "sketch"
 sketch <- FindVariableFeatures(sketch)
 sketch <- ScaleData(sketch)
 sketch <- RunPCA(sketch)
-sketch <- FindNeighbors(sketch, reduction = "integrated.cca", dims = 1:50)
+sketch <- FindNeighbors(sketch, dims = 1:50)
 sketch <- FindClusters(sketch, resolution = 2)
 sketch <- RunUMAP(sketch, reduction = "pca", dims = 1:50, return.model = T, reduction.name = "umap")
 
@@ -370,11 +370,6 @@ x <- AzimuthAPI::CloudAzimuth(x, assay = "sketch")
 head(x@meta.data)
 
 x@meta.data %>% count(azimuth_label) %>% arrange(desc(n))
-
-DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap.cca",
-    repel = TRUE) + NoLegend() + 
-    ggtitle("Azimuth labels on CCA-integrated UMAP")
-ggsave("images/umap_by_azimuth_cca_integration.png", width = 10, height = 6, dpi = 600)
 
 DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
     repel = TRUE) + NoLegend() + 
