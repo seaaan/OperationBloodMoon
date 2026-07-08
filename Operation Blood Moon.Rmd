@@ -350,7 +350,17 @@ sketch <- ProjectData(
   refdata = list(cluster_full = 'seurat_clusters'))
 
 # now that we have projected the full dataset, switch back to analyzing all cells
-DefaultAssay(obj) <- 'RNA'
+DefaultAssay(sketch) <- 'RNA'
+
+# save projected sketch
+write_rds(sketch, "data/rds_files/05-projected.rds")
+
+p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = 'umap', group.by = 'seurat_clusters') + NoLegend()
+p2 <- DimPlot(sketch, label = T, label.size = 3, reduction = 'full.umap', group.by = 'cluster_full', alpha = 0.1) + NoLegend()
+
+p1 + p2
+
+ggsave("images/umap_sketch_vs_all_cells.png", width = 10, height = 6, dpi = 600)
 ```
 
 ```{r}
