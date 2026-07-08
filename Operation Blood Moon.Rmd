@@ -336,6 +336,21 @@ umap <- as.data.frame(Embeddings(sketch, reduction = "umap")) %>%
 ggplot(umap, aes(umap_1, umap_2, color = seurat_clusters)) + facet_wrap(~Ptid) + geom_point() + ylim(0, 2.5) + xlim(-2.5, 0)
 ```
 
+```{r}
+# THIS CHUNK PROJECTS THE CALCULATIONS FROM THE SKETCH
+
+sketch <- ProjectData(
+  object = sketch,
+  assay = 'RNA',
+  full.reduction = 'pca.full',
+  sketched.assay = 'sketch',
+  sketched.reduction = 'pca',
+  umap.model = 'umap',
+  dims = 1:50,
+  refdata = list(cluster_full = 'seurat_clusters'))
+
+# now that we have projected the full dataset, switch back to analyzing all cells
+DefaultAssay(obj) <- 'RNA'
 ```
 
 ```{r}
