@@ -301,9 +301,9 @@ DefaultAssay(sketch) <- "sketch"
 sketch <- FindVariableFeatures(sketch)
 sketch <- ScaleData(sketch)
 sketch <- RunPCA(sketch)
-sketch <- FindNeighbors(sketch, dims = 1:50)
+sketch <- FindNeighbors(sketch, dims = 1:30)
 sketch <- FindClusters(sketch, resolution = 2)
-sketch <- RunUMAP(sketch, reduction = "pca", dims = 1:50, return.model = T, reduction.name = "umap")
+sketch <- RunUMAP(sketch, reduction = "pca", dims = 1:30, return.model = T, reduction.name = "umap")
 
 # save processed sketch
 write_rds(sketch, "data/rds_files/04-sketch-final.rds")
@@ -346,7 +346,7 @@ sketch <- ProjectData(
   sketched.assay = 'sketch',
   sketched.reduction = 'pca',
   umap.model = 'umap',
-  dims = 1:50,
+  dims = 1:30,
   refdata = list(cluster_full = 'seurat_clusters'))
 
 # now that we have projected the full dataset, switch back to analyzing all cells
