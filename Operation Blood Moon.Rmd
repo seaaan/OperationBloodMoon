@@ -263,7 +263,7 @@ write_rds(all_samples_merged_subset, "data/rds_files/02-merged.rds")
 ```{r}
 # Read in merged seurat object
 
-read_rds("data/rds_files/02-merged.rds")
+all_samples_merged_subset <- read_rds("data/rds_files/02-merged.rds")
 ```
 
 ```{r}
@@ -301,19 +301,12 @@ DefaultAssay(sketch) <- "sketch"
 sketch <- FindVariableFeatures(sketch)
 sketch <- ScaleData(sketch)
 sketch <- RunPCA(sketch)
-
-
-#now integrate
-sketch <- IntegrateLayers(object = sketch, method = CCAIntegration,
-    orig.reduction = "pca", new.reduction = "integrated.cca", verbose = FALSE)
-sketch <- FindNeighbors(sketch, reduction = "integrated.cca", dims = 1:50)
+sketch <- FindNeighbors(sketch, dims = 1:30)
 sketch <- FindClusters(sketch, resolution = 2)
-sketch <- RunUMAP(sketch, reduction = "pca", dims = 1:50, return.model = T, reduction.name = "umap")
-sketch <- RunUMAP(sketch, reduction = "integrated.cca", dims = 1:50, reduction.name = "umap.cca")
+sketch <- RunUMAP(sketch, reduction = "pca", dims = 1:30, return.model = T, reduction.name = "umap")
 
 # save processed sketch
 write_rds(sketch, "data/rds_files/04-sketch-final.rds")
-
 ```
 
 ```{r read in processed sketch}
@@ -324,16 +317,16 @@ sketch<-read_rds("data/rds_files/04-sketch-final.rds")
 # THIS CHUNK PLOTS UMAPS OF THE SKETCH COLORED BY VARIOUS CO-VARIATES
 
 DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Sample") + NoLegend()
-ggsave("images/umap_by_sample_preintegration.png", width = 6, height = 4, dpi = 600)
+ggsave("images/umap_by_sample.png", width = 6, height = 4, dpi = 600)
 
 DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Phase") + NoLegend()
-ggsave("images/umap_by_phase_preintegration.png", width = 6, height = 4, dpi = 600)
+ggsave("images/umap_by_phase.png", width = 6, height = 4, dpi = 600)
 
 DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Ptid") + NoLegend()
-ggsave("images/umap_by_ptid_preintegration.png", width = 6, height = 4, dpi = 600)
+ggsave("images/umap_by_ptid.png", width = 6, height = 4, dpi = 600)
 
 DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "GEM") + NoLegend()
-ggsave("images/umap_by_gem_preintegration.png", width = 6, height = 4, dpi = 600)
+ggsave("images/umap_by_gem.png", width = 6, height = 4, dpi = 600)
 
 # Tried to facet by Ptid with "split.by" argument of DimPlot, but it was really slow
 # instead here extract the UMAP from the Seurat object and the metadata and plot separately
@@ -341,20 +334,41 @@ umap <- as.data.frame(Embeddings(sketch, reduction = "umap")) %>%
     merge(sketch@meta.data, by = "row.names")
 
 ggplot(umap, aes(umap_1, umap_2, color = seurat_clusters)) + facet_wrap(~Ptid) + geom_point() + ylim(0, 2.5) + xlim(-2.5, 0)
+```
 
-# Compare UMAP with integration or not
-p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = "umap", group.by = "Phase") + ggtitle("Before CCA integration")
-p2 <- DimPlot(sketch, label = T, label.size = 3, reduction = "umap.cca", group.by = "Phase") + ggtitle("After CCA integration")
+```{r}
+# THIS CHUNK PROJECTS THE CALCULATIONS FROM THE SKETCH
+
+sketch <- ProjectData(
+  object = sketch,
+  assay = 'RNA',
+  full.reduction = 'pca.full',
+  sketched.assay = 'sketch',
+  sketched.reduction = 'pca',
+  umap.model = 'umap',
+  dims = 1:30,
+  refdata = list(cluster_full = 'seurat_clusters'))
+
+# now that we have projected the full dataset, switch back to analyzing all cells
+DefaultAssay(sketch) <- 'RNA'
+
+# save projected sketch
+write_rds(sketch, "data/rds_files/05-projected.rds")
+
+p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = 'umap', group.by = 'seurat_clusters') + NoLegend()
+p2 <- DimPlot(sketch, label = T, label.size = 3, reduction = 'full.umap', group.by = 'cluster_full', alpha = 0.1) + NoLegend()
 
 p1 + p2
-ggsave("images/umap_by_phase_compare_integration.png", width = 8, height = 4, dpi = 600)
 
-# STOPPED HERE 2026-06-18
-
+ggsave("images/umap_sketch_vs_all_cells.png", width = 10, height = 6, dpi = 600)
 ```
 
 ```{r}
 # THIS CHUNK DOES AZIMUTH CELL ANNOTATION
+
+# This code works starting from 04-sketch-final (the object before running ProjectData)
+# but fails after running ProjectData
+# See: https://github.com/satijalab/AzimuthAPI/issues/10 for possible solution
 
 # For demonstration, run on a subset of the cells
 # Select only those cells that have a seurat cluster (the "sketch" cells)
@@ -370,11 +384,6 @@ x <- AzimuthAPI::CloudAzimuth(x, assay = "sketch")
 head(x@meta.data)
 
 x@meta.data %>% count(azimuth_label) %>% arrange(desc(n))
-
-DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap.cca",
-    repel = TRUE) + NoLegend() + 
-    ggtitle("Azimuth labels on CCA-integrated UMAP")
-ggsave("images/umap_by_azimuth_cca_integration.png", width = 10, height = 6, dpi = 600)
 
 DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
     repel = TRUE) + NoLegend() + 
