@@ -336,10 +336,95 @@ umap <- as.data.frame(Embeddings(sketch, reduction = "umap")) %>%
 ggplot(umap, aes(umap_1, umap_2, color = seurat_clusters)) + facet_wrap(~Ptid) + geom_point() + ylim(0, 2.5) + xlim(-2.5, 0)
 ```
 
+## Cluster annotation
+
+```{r}
+# THIS CHUNK DOES AZIMUTH CELL ANNOTATION
+
+# This code works starting from 04-sketch-final (the object before running ProjectData)
+# but fails after running ProjectData
+# See: https://github.com/satijalab/AzimuthAPI/issues/10 for possible solution
+
+# For demonstration, run on a subset of the cells
+# Select only those cells that have a seurat cluster (the "sketch" cells)
+for_azimuth <- subset(sketch, !is.na(seurat_clusters))
+
+# Have to run JoinLayers before Azimuth or you get an error 
+for_azimuth <- JoinLayers(for_azimuth)
+
+# I don't know why but assay has to be "sketch" otherwise it breaks with 
+# a very obscure error message
+for_azimuth <- AzimuthAPI::CloudAzimuth(for_azimuth, assay = "sketch")
+
+head(for_azimuth@meta.data)
+
+for_azimuth@meta.data %>% count(azimuth_label) %>% arrange(desc(n))
+
+DimPlot(for_azimuth, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
+    repel = TRUE) + NoLegend() + 
+    ggtitle("Azimuth labels on un-integrated UMAP")
+ggsave("images/umap_by_azimuth_no_integration.png", width = 10, height = 6, dpi = 600)
+
+for_azimuth@meta.data %>% ggplot(aes(x = azimuth_label, fill = factor(seurat_clusters))) + geom_bar() + coord_flip()
+
+for_azimuth@meta.data %>% ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
+
+for_azimuth@meta.data %>% filter(str_detect(azimuth_label, "T cell")) %>%  ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
+
+DimPlot(for_azimuth, label = T, label.size = 3, reduction = 'umap', group.by = 'azimuth_medium') + NoLegend()
+
+# is this right? is this wrong? who knows
+# TODO
+sketch <- AddMetaData(sketch, for_azimuth@meta.data)
+```
+
+
+
+TODO: 
+* Figure out how to project azimuth labels to the full data set
+* Doublet detection
+* Use full data set for DE instead of sketch
+* Account for pairing in DE
+
+
+
+
+Groups
+* NK: 4, 14
+* T cell CD4: 0, 1, 3, 9, 10, 13, 18, 19, 20, 23, 24, 25, 26, 30, 31, 34
+* T cell CD8: 2, 8, 11, 14, 16, 19, 24, 31 
+* B cells: 5, 17, 19, 21, 35
+* Monocytes:  6, 15, 20, 23, 25, 28
+* 12, 26: platelets
+* Multiplets? CD3, CD14, NKG7: 7, 13
+* 29: basophils/mast cells
+* 30: pDC
+* 32: CD34
+* 33
+
+```{r}
+# THIS CHUNK IDENTIFIES THE MARKERS ASSOCIATED WITH EACH CLUSTER
+
+# using the sketch instead of the projected to make it go faster
+
+sketch <- JoinLayers(sketch)
+all_markers <- FindAllMarkers(sketch, only.pos = TRUE)
+
+
+DotPlot(sketch, features = c("CD3D", "CD4", "CD8A", "NKG7", "CD14", "CD19"))
+
+# are any clusters obviously junk? 
+FeaturePlot(sketch, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"))
+
+```
+
 ```{r}
 # THIS CHUNK PROJECTS THE CALCULATIONS FROM THE SKETCH
 
-sketch <- ProjectData(
+# TODO
+# Figure out how to project azimuth stuff
+
+projected <- ProjectData(
   object = sketch,
   assay = 'RNA',
   full.reduction = 'pca.full',
@@ -347,7 +432,7 @@ sketch <- ProjectData(
   sketched.reduction = 'pca',
   umap.model = 'umap',
   dims = 1:30,
-  refdata = list(cluster_full = 'seurat_clusters'))
+  refdata = list(cluster_full = 'seurat_clusters', azimuth_medium_full = "azimuth_medium"))
 
 # now that we have projected the full dataset, switch back to analyzing all cells
 DefaultAssay(sketch) <- 'RNA'
@@ -363,40 +448,57 @@ p1 + p2
 ggsave("images/umap_sketch_vs_all_cells.png", width = 10, height = 6, dpi = 600)
 ```
 
+
+## Differential expression
+
 ```{r}
-# THIS CHUNK DOES AZIMUTH CELL ANNOTATION
+monocytes <- subset(x, subset = azimuth_medium == "Monocyte")
 
-# This code works starting from 04-sketch-final (the object before running ProjectData)
-# but fails after running ProjectData
-# See: https://github.com/satijalab/AzimuthAPI/issues/10 for possible solution
+monocytes_pseudobulked <- AggregateExpression(monocytes, assays = "RNA", 
+    return.seurat = TRUE, 
+    group.by = c("Ptid", "Phase"))
 
-# For demonstration, run on a subset of the cells
-# Select only those cells that have a seurat cluster (the "sketch" cells)
-x <- subset(sketch, !is.na(seurat_clusters))
+# pseudobulked analysis
+Idents(monocytes_pseudobulked) <- "Phase"
+FindMarkers(monocytes_pseudobulked, 
+    ident.1 = "F",
+    ident.2 = "L")
 
-# Have to run JoinLayers before Azimuth or you get an error 
-x <- JoinLayers(x)
+# non-pseudobulked analysis
+Idents(monocytes) <- "Phase"
+FindMarkers(monocytes, 
+    ident.1 = "F",
+    ident.2 = "L")
 
-# I don't know why but assay has to be "sketch" otherwise it breaks with 
-# a very obscure error message
-x <- AzimuthAPI::CloudAzimuth(x, assay = "sketch")
 
-head(x@meta.data)
+do_de_test <- function(data, clusters) {
+    subset_and_aggregated <- subset(data, subset = seurat_clusters %in% clusters) |> 
+        AggregateExpression(assays = "RNA", return.seurat = TRUE, 
+            group.by = c("Ptid", "Phase"))
+    
+    Idents(subset_and_aggregated) <- "Phase"
+    FindMarkers(subset_and_aggregated, 
+        ident.1 = "F",
+        ident.2 = "L")
+}
 
-x@meta.data %>% count(azimuth_label) %>% arrange(desc(n))
+test <- do_de_test(sketch, c(6, 7, 15, 20, 23, 28))
 
-DimPlot(x, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
-    repel = TRUE) + NoLegend() + 
-    ggtitle("Azimuth labels on un-integrated UMAP")
-ggsave("images/umap_by_azimuth_no_integration.png", width = 10, height = 6, dpi = 600)
+test_project <- ProjectData(
+  object = x,
+  assay = 'RNA',
+  full.reduction = 'pca.full',
+  sketched.assay = 'sketch',
+  sketched.reduction = 'pca',
+  umap.model = 'umap',
+  dims = 1:30,
+  refdata = list(cluster_full = 'seurat_clusters', azimuth_medium_full = "azimuth_medium"))
 
-x@meta.data %>% ggplot(aes(x = azimuth_label, fill = factor(seurat_clusters))) + geom_bar() + coord_flip()
 
-x@meta.data %>% ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
-
-x@meta.data %>% filter(str_detect(azimuth_label, "T cell")) %>%  ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
 
 ```
+
+
 
 
 ```{r}
