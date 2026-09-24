@@ -6,6 +6,30 @@ output: html_document
 ---
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
+
+# 2026-09-03
+We're picking up at azimuth. RLC suggested using the FindAllMarkers seurat functions to look for DEGs between the clusters. You can ask for "positive" markers, ie what is in that cluster that isn't expressed in others or "negative" what is NOT in a particular cluster compared to others. You need to run JoinLayers before FindAllMarkers. I think there is one layer per sample and we need to put them all together. 
+Following this V5 tutorial https://satijalab.org/seurat/articles/pbmc3k_tutorial
+
+We're doing FindAllMarkers on the sketch, not the full data set because it was taking too long. We already projected the sketch onto the full set but then decided to go back to the sketch. 
+
+We made a DotPlot() of expression of some of our favorite phenotyping genes and were able to identify major cell groups. There are some clusters that don't seem to be expressing much of anyhting. RLC said that these could be cells that are dead or expressing few genes or a lot of mt gene and are therefore clustering together for that reason, not because they are actually the same cell type. You can make a plot with those clsuters of your QC variables like nCount and mt% to see if they are indeed bad quality cells and should be removed. 
+We did umap plots with nCount, nFeature and percent.mt and did not see any obvious "junk" clusters, ie, higher %mt and low gene counts. remember that we have already done an initial filter on these parameters. 
+
+TODO
+Double detection, we appear to have  clusters that are multiplets, ie expressing markers that we would not expect to coocur. 
+
+
+We subsetted our sketch data to just monocytes (cells that were labeled by azimuth as monocytes).
+We want to look at DEGs within monocytes that are different between phases. First we need to pseudobulk the data--pretend it is bulk RNAseq not single cells, because we're interested in differences between phases for all monocytes, not on a per cell basis. This causes our data to be collapsed into 24 samples (2 per donor) instead of like a million if we had kept it as non bulk. 
+
+It looks like there are no sig diffs between phases but we're not sure how to account for pairing in this test. Internet tells me that if you switch to a different type of test you can include some type of pairing.
+
+Friction: only our sketch has the azimuth data, the full data set only has clusters. 
+
+Got stuck at trying to project the sketch with the azimuth data back onto the full data set to subsequently do DE tests on all the cells. (?) The problem maybe wasn't with azimuth, I don't know what's going on.
+
+
 # 2026-07-08 group meeting
 Previous Leon says:
 In our group script, we have only used NormalizeData, not scTransform, because we don’t have enough computing power. RLC used Hyak to run scTransform though. 
