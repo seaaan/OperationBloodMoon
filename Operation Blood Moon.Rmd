@@ -372,22 +372,7 @@ for_azimuth@meta.data %>% ggplot(aes(x = seurat_clusters, fill = factor(azimuth_
 for_azimuth@meta.data %>% filter(str_detect(azimuth_label, "T cell")) %>%  ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
 
 DimPlot(for_azimuth, label = T, label.size = 3, reduction = 'umap', group.by = 'azimuth_medium') + NoLegend()
-
-# is this right? is this wrong? who knows
-# TODO
-sketch <- AddMetaData(sketch, for_azimuth@meta.data)
 ```
-
-
-
-TODO: 
-* Figure out how to project azimuth labels to the full data set
-* Doublet detection
-* Use full data set for DE instead of sketch
-* Account for pairing in DE
-
-
-
 
 Groups
 * NK: 4, 14
@@ -410,7 +395,6 @@ Groups
 sketch <- JoinLayers(sketch)
 all_markers <- FindAllMarkers(sketch, only.pos = TRUE)
 
-
 DotPlot(sketch, features = c("CD3D", "CD4", "CD8A", "NKG7", "CD14", "CD19"))
 
 # are any clusters obviously junk? 
@@ -418,11 +402,49 @@ FeaturePlot(sketch, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"))
 
 ```
 
+## Project calculations back to full data set
+
 ```{r}
 # THIS CHUNK PROJECTS THE CALCULATIONS FROM THE SKETCH
 
 # TODO
 # Figure out how to project azimuth stuff
+# test_project <- ProjectData(
+#   object = x,
+#   assay = 'RNA',
+#   full.reduction = 'pca.full',
+#   sketched.assay = 'sketch',
+#   sketched.reduction = 'pca',
+#   umap.model = 'umap',
+#   dims = 1:30,
+#   refdata = list(cluster_full = 'seurat_clusters', azimuth_medium_full = "azimuth_medium"))
+# pca.full is not in the object. Data from all cells will be projected to pca
+# Projecting cell embeddings
+# Finding sketch neighbors
+# Finding sketch weight matrix
+# 0%   10   20   30   40   50   60   70   80   90   100%
+# [----|----|----|----|----|----|----|----|----|----|
+# **************************************************|
+# Transfering refdata from sketch
+# Error in TransferLablesNN(reference.labels = reference.labels, weight.matrix = full_sketch.weight) : 
+#   wrong weights matrix input
+# In addition: Warning message:
+# In grid.Call.graphics(C_upviewport, as.integer(n)) :
+#   cannot pop the top-level viewport ('grid' and 'graphics' output mixed?)
+# x <- TransferSketchLabels(
+#   sketch_with_azimuth,
+#   sketched.assay = "sketch",
+#   reduction = "pca",
+#   dims = 1:30,
+#   refdata = list(azimuth_medium_full = "azimuth_medium"),
+#   k = 50,
+#   reduction.model = NULL,
+#   neighbors = NULL,
+#   recompute.neighbors = FALSE,
+#   recompute.weights = FALSE,
+#   verbose = TRUE
+# )
+# same error
 
 projected <- ProjectData(
   object = sketch,
@@ -432,74 +454,173 @@ projected <- ProjectData(
   sketched.reduction = 'pca',
   umap.model = 'umap',
   dims = 1:30,
-  refdata = list(cluster_full = 'seurat_clusters', azimuth_medium_full = "azimuth_medium"))
+  refdata = list(cluster_full = 'seurat_clusters'))
 
 # now that we have projected the full dataset, switch back to analyzing all cells
-DefaultAssay(sketch) <- 'RNA'
+DefaultAssay(projected) <- 'RNA'
+```
 
-# save projected sketch
-write_rds(sketch, "data/rds_files/05-projected.rds")
+## Add our own annotations based on azimuth and our brains
 
-p1 <- DimPlot(sketch, label = T, label.size = 3, reduction = 'umap', group.by = 'seurat_clusters') + NoLegend()
-p2 <- DimPlot(sketch, label = T, label.size = 3, reduction = 'full.umap', group.by = 'cluster_full', alpha = 0.1) + NoLegend()
+```{r}
+# THIS CHUNK MAPS EACH CELL CLUSTER TO AN ANNOTATION BASED ON AZIMUTH AND OUR
+# OBSERVATIONS
+
+# describe each cluster with the most likely azimuth name
+cell_annotations <- for_azimuth@meta.data |> 
+    # simplify T cell labels to CD4 or CD8 (dropping memory labels)
+    mutate(final_level_labels = case_when(
+        str_detect(final_level_labels, "CD4") ~ "CD4 T cell", 
+        str_detect(final_level_labels, "CD8") ~ "CD8 T cell",
+        TRUE ~ final_level_labels
+    )) |> 
+    # count number of cells with each label in each cluster
+    group_by(seurat_clusters, final_level_labels) |> 
+    count() |> 
+    # for each cluster, use the most common label and count 
+    # the percent of cells with that label
+    group_by(seurat_clusters) |> 
+    arrange(desc(n)) |>
+    mutate(percent = n/sum(n)*100) |> 
+    slice(1) |> 
+    arrange(percent) |> 
+    # replace labels where we're not confident or there are multiplets
+    mutate(our_annotation = case_when(
+        seurat_clusters %in% c(7, 13) ~ "Multiplets",
+        percent < 60 ~ "Not confident", 
+        TRUE ~ final_level_labels)) |> 
+    rename(cluster_full = seurat_clusters) |> 
+    select(cluster_full, our_annotation)
+
+# create a metadata data frame with our new cluster annotations
+# (merge with current metadata to get cell identifiers)
+new_annotation <- projected@meta.data |> 
+    rownames_to_column() |> 
+    inner_join(cell_annotations, by = "cluster_full")
+rownames(new_annotation) <- new_annotation$rowname    
+new_annotation <- subset(new_annotation, select = -rowname)
+
+# add our_annotations into the metadata for projected 
+projected <- AddMetaData(projected, new_annotation)
+
+# make the default Ident be "our_annotation"
+# otherwise it gives a bunch of problems
+Idents(projected) <- "our_annotation"
+
+# save projected data
+write_rds(projected, "data/rds_files/05-projected.rds")
+
+# JoinLayers and save as a separate object 
+write_rds(JoinLayers(projected), "data/rds_files/06-projected_joined.rds")
+```
+
+## Plot projected data vs sketch and new annotations
+
+```{r}
+# THIS CHUNK CREATES PLOTS COMPARING THE SKETCH WITH THE FULL DATA AND THE 
+# NEW ANNOTATIONS
+
+p1 <- DimPlot(projected, label = T, label.size = 3, reduction = 'umap', group.by = 'seurat_clusters') + NoLegend()
+p2 <- DimPlot(projected, label = T, label.size = 3, reduction = 'full.umap', group.by = 'cluster_full', alpha = 0.1) + NoLegend()
 
 p1 + p2
 
 ggsave("images/umap_sketch_vs_all_cells.png", width = 10, height = 6, dpi = 600)
+
+# color umap with new annotations
+DimPlot(projected, label = T, label.size = 3, reduction = 'full.umap', 
+    group.by = 'our_annotation', alpha = 0.1) + 
+    NoLegend()
+
+VlnPlot(projected, features = c("CD3D"), group.by = "our_annotation", pt.size = 0)
+DotPlot(projected, features = c("CD3D", "CD4", "CD8A", "NKG7", "CD14", "CD19"))
 ```
 
+```{r read in processed sketch}
+projected_joined <- read_rds("data/rds_files/06-projected_joined.rds")
+```
+
+## Top markers for each population
+
+```{r}
+# THIS CHUNK CALCULATES THE TOP MARKERS FOR EACH CELL POPULATION
+
+# run some other time
+# use top markers to populate DotPlot
+all_markers <- FindAllMarkers(projected_joined, only.pos = TRUE)
+write_csv(all_markers, "results/all_markers.csv")
+
+```
 
 ## Differential expression
 
 ```{r}
-monocytes <- subset(x, subset = azimuth_medium == "Monocyte")
+# THIS CHUNK CALCULATES DE GENES BY CYCLE PHASE
 
-monocytes_pseudobulked <- AggregateExpression(monocytes, assays = "RNA", 
-    return.seurat = TRUE, 
-    group.by = c("Ptid", "Phase"))
-
-# pseudobulked analysis
-Idents(monocytes_pseudobulked) <- "Phase"
-FindMarkers(monocytes_pseudobulked, 
-    ident.1 = "F",
-    ident.2 = "L")
-
-# non-pseudobulked analysis
-Idents(monocytes) <- "Phase"
-FindMarkers(monocytes, 
-    ident.1 = "F",
-    ident.2 = "L")
-
-
-do_de_test <- function(data, clusters) {
-    subset_and_aggregated <- subset(data, subset = seurat_clusters %in% clusters) |> 
-        AggregateExpression(assays = "RNA", return.seurat = TRUE, 
-            group.by = c("Ptid", "Phase"))
+# function to test for differentially expressed genes by phase within specified
+# cell population, adjusting for ptid 
+do_de_test <- function(data, annotation) {
+    # subset the seurat object to cells of interest
+    subsetted <- subset(data, subset = our_annotation == annotation) 
     
-    Idents(subset_and_aggregated) <- "Phase"
-    FindMarkers(subset_and_aggregated, 
+    # incantation that stops using BPCells and puts data into memory
+    # necessary for running any FindMarkers test other than wilcox
+    mat <- LayerData(subsetted, assay = "RNA", layer = "counts")
+    mat <- as(mat, "dgCMatrix")
+    subsetted[["RNA"]] <- CreateAssayObject(counts = mat)
+    
+    # specify comparison between phases
+    Idents(subsetted) <- "Phase"
+    
+    de_results <- FindMarkers(subsetted, 
         ident.1 = "F",
-        ident.2 = "L")
+        ident.2 = "L",
+        test.use = "MAST", 
+        # accounts for pairing between samples
+        latent.var = "Ptid") |> 
+        # store gene names in a column
+        rownames_to_column("gene") |> 
+        # record cell population
+        mutate(our_annotation = annotation) 
+    
+    # save a file with the results 
+    write_csv(de_results, paste0("results/", annotation, "_de_genes.csv"))
+    
+    # return the results
+    de_results
 }
 
-test <- do_de_test(sketch, c(6, 7, 15, 20, 23, 28))
+# testing
+# x <- subset(projected, downsample = 100)
+# x_joined <- JoinLayers(x)
+# test <- do_de_test(x_joined, populations[8])
 
-test_project <- ProjectData(
-  object = x,
-  assay = 'RNA',
-  full.reduction = 'pca.full',
-  sketched.assay = 'sketch',
-  sketched.reduction = 'pca',
-  umap.model = 'umap',
-  dims = 1:30,
-  refdata = list(cluster_full = 'seurat_clusters', azimuth_medium_full = "azimuth_medium"))
+projected_joined <- read_rds("data/rds_files/06-projected_joined.rds")
 
+# get name of each population
+populations <- unique(projected_joined@meta.data$our_annotation)
 
+# run DE tests for every cell population
+de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined, popn)) |> 
+    bind_rows()
 
+# plots to gut check the de_genes results
+# VlnPlot(x_joined |> subset(our_annotation == "CD14 monocyte"), "CALR", group.by = "Phase")
+# VlnPlot(x_joined |> subset(our_annotation == "CD14 monocyte"), "CALR", group.by = "Ptid", 
+#     split.by = "Phase")
+# VlnPlot(x_joined |> subset(our_annotation == "CD16 NK cell"), "SPPL2B", group.by = "Ptid", 
+#     split.by = "Phase")
 ```
 
 
 
+TODO: 
+
+* Run FindAllMarkers on full dataset to identify top genes associated with each annotation
+    * Make nice dot plot justifying annotations based on top markers
+* Run DE on full projected data set
+* Plot number of cells in each cell type vs phase (i.e. are there more CD4 T cells during follicular than luteal?)
+* Switch to Hyak
 
 ```{r}
 sessionInfo()
