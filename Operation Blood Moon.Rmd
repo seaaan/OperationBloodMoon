@@ -545,11 +545,44 @@ projected_joined <- read_rds("data/rds_files/06-projected_joined.rds")
 ```{r}
 # THIS CHUNK CALCULATES THE TOP MARKERS FOR EACH CELL POPULATION
 
-# run some other time
-# use top markers to populate DotPlot
-all_markers <- FindAllMarkers(projected_joined, only.pos = TRUE)
+# FindAllMarkers takes a long time to run on the full data set in the 
+#       "projected_joined" Seurat object
+# To speed up, run it only on the sketch cells (contained within 
+#       "projected_joined"). 
+
+# Doing so requires the following steps
+# 1. Change the default assay from "RNA" to "sketch" to tell Seurat to use the 
+#       data stored for the sketch cells
+# 2. Subset the Seurat object to only include the sketch cells (I'm not sure 
+#       this is actually necessary)
+# 3. Redo JoinLayers (we already ran this command on the full projected dataset 
+#       but for some reason you have to run it again with the DefaultAssay set
+#       to "sketch")
+
+# Note: we have to start with the Seurat object "projected_joined" because that's
+#       where we added the cell annotations. The Seurat object "sketch" doesn't
+#       contain the cell annotations, so we can't use it
+
+# change default assay to sketch (step 1 above)
+DefaultAssay(projected_joined) <- "sketch"
+
+all_markers <- projected_joined |> 
+    # get just the cells in the sketch to speed up the code 
+    # these cells are identified by having a value in the "seurat_clusters"
+    # metadata column, which was only calculated for the sketch cells
+    # (step 2 above)
+    subset(subset = !is.na(seurat_clusters)) |> 
+    # redo JoinLayers on the sketch assay (step 3 above)
+    JoinLayers() |> 
+    FindAllMarkers(only.pos = TRUE)
+
 write_csv(all_markers, "results/all_markers.csv")
 
+# change default assay back to RNA (all cells instead of just sketch cells)
+# for future use
+DefaultAssay(projected_joined) <- "RNA"
+
+# Next step: use top markers to populate DotPlot
 ```
 
 ## Differential expression
