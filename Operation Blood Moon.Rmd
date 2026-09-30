@@ -560,6 +560,7 @@ write_csv(all_markers, "results/all_markers.csv")
 # function to test for differentially expressed genes by phase within specified
 # cell population, adjusting for ptid 
 do_de_test <- function(data, annotation) {
+    print(paste("running", annotation))
     # subset the seurat object to cells of interest
     subsetted <- subset(data, subset = our_annotation == annotation) 
     
@@ -568,6 +569,10 @@ do_de_test <- function(data, annotation) {
     mat <- LayerData(subsetted, assay = "RNA", layer = "counts")
     mat <- as(mat, "dgCMatrix")
     subsetted[["RNA"]] <- CreateAssayObject(counts = mat)
+    
+    # delete the matrix object to save memory 
+    # (it has already been saved inside the Seurat object so is okay to delete)
+    rm(mat)
     
     # specify comparison between phases
     Idents(subsetted) <- "Phase"
@@ -597,8 +602,9 @@ do_de_test <- function(data, annotation) {
 
 projected_joined <- read_rds("data/rds_files/06-projected_joined.rds")
 
-# get name of each population
-populations <- unique(projected_joined@meta.data$our_annotation)
+# get names of each population in reverse order of population size
+# so it runs the smallest populations first
+populations <- projected_joined@meta.data |> group_by(our_annotation) |> count() |> arrange(n) |> pull(our_annotation)
 
 # run DE tests for every cell population
 de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined, popn)) |> 
