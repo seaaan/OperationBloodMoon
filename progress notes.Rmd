@@ -7,6 +7,18 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+#2026-09-24
+Decided to manually map the cluster info that we got from azimuth onto the full data set. Since some clusters have multiple cell type designations, we chose the designation that was assigned to at least 70% of cells in the cluster. If it was less than that, we just p=labeled it as "not confident". This required turning rownames (the cell identifier) into a column, joining, then turning it back into rownames to fit the required formatting of the object. The rownames are cell identifiers. But then we couldn't make a DotPlot with the newly annotated full data set. It claimed that we had duplicate row names. Did various incantations, got it to work.
+
+We started doing FindAllMarkers with our annotations so that we could do make another DotPlot with what the computer finds, not just our sanity check phenotyping markers (yes, CD4 is expressed by the cluster we called CD4 cells). That would require us to joinLayers and that would take a long time so we moved on to our pseudobulk analysis. 
+We tried to use MAST as the test type (default is Wilcoxon) but it wasn't an option. 
+
+you use AggregateExpression to pseudobulk the cells together and then you can do differential expression analysis between the two phases (F and L). So we're pretending we did bulk RNAseq for F and L samples and are looking for DEGs.
+
+FYI FindAllMarkers is different from FindMarkers. In the latter you specify which things you want to compare and in the former it automatically compares everything against everything. 
+
+We stopped after looking at  the DE genes for the pseudobulked data in a few cell types. We only did the test on a subset of 100 cells though since it would take forever. Sean will rerun over night and also run the JoinLayers for the we could do make another DotPlot with what the computer finds using FindAllMArkers, not just our sanity check phenotyping markers
+
 # 2026-09-03
 We're picking up at azimuth. RLC suggested using the FindAllMarkers seurat functions to look for DEGs between the clusters. You can ask for "positive" markers, ie what is in that cluster that isn't expressed in others or "negative" what is NOT in a particular cluster compared to others. You need to run JoinLayers before FindAllMarkers. I think there is one layer per sample and we need to put them all together. 
 Following this V5 tutorial https://satijalab.org/seurat/articles/pbmc3k_tutorial
