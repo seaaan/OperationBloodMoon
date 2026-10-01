@@ -7,6 +7,51 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+#2026-10-02
+We have some results to look at. 
+
+RLC on hyak did find all markers for cell type IE How is this cluster different from all other clusters (and this night from all other nights). 
+She tried some ways to speed up the analysis using parallelization  and putting thresholds on the logFC but it didn't seem like either strategy was much faster. On the sketch it only takes like 10min so we don't know why this isn't better. She ended up doing the cell type DE on a subset of 500 cells which is recommended in a seurat tutorial. 
+
+Sean did on his computer:
+
+Differential gene expression results (follicular vs luteal) for all populations except CD16 NK cells, CD14 monocytes, and CD4 T cells. These cell populations were too large for the code to finish in a reasonable amount of time.
+
+He did the cell type DE tests ONLY on the sketch
+
+
+From Sean yesterday on slack
+
+For tomorrow my computer has .csv files containing the results of the analyses we set up at our last meeting. Specifically:
+
+FindAllMarkers output for each of our cell annotations (i.e. which markers are associated with each cell type). We planned to use these to create a dot plot showing the defining characteristics of each cell type.
+I made some changes to the code to run FindAllMarkers on the sketch cells instead of on all the cells. It was too slow on all the cells. I pushed those changes just a few minutes ago.  
+
+Differential gene expression results (follicular vs luteal) for all populations except CD16 NK cells, CD14 monocytes, and CD4 T cells. These cell populations were too large for the code to finish in a reasonable amount of time. I'm not confident that these results are actually right/testing what we want to be testing. 
+
+
+We're comparing the UMAP resulting from RLC's run vs Sean's runon the sketch and then projection to the full data set. The shapes are different because we didn't set.seed but the content seems more or less similar. 
+
+RLC was concerned that we annotated things as CD4 and CD8 differently than azimuth. She made umaps of just azimuth defined CD4 and CD8 expression and they seemed to cover different areas than what we designated as those groups in the our-annotation heat map.  She was able to run the full data set with azimuth. 
+
+Discussed increasing the resolution of our clustering on the sketch which would give us more clusters. This might make our annotations closer to azimuth which looks at each cells and assigns labels rather than clustering. 
+
+When we made our_annotations, we named a cluster based on the cell type that azimuth designated to at least 60% of the cells. When changed that to 90% but then we just had most of our cells designated as "uncertain". 
+
+What is the goal of trying to match our annotations to azimuth? If the goal is to fact check azimuth maybe there are other ways to do that, like compare gene expression across the assigned groups. 
+
+
+Ran into the duplicate values problem again when trying to make a dot plot. This happens when you have NA as the value for whatever label you're trying to use. Remove rows with NA's from the data set to proceed
+
+no_na<-subset(annotated, subset  = !is.na(azimuth_medium))
+
+Then plot the no_na object.
+
+RLC suggests clustering with a lower resolution to make it easier to manually assign cell types to clusters. 
+
+Possible plan: do a low resolution clustering and first assign major cell types then run the clustering again on each "major" group. 
+
+
 #2026-09-24
 Decided to manually map the cluster info that we got from azimuth onto the full data set. Since some clusters have multiple cell type designations, we chose the designation that was assigned to at least 70% of cells in the cluster. If it was less than that, we just p=labeled it as "not confident". This required turning rownames (the cell identifier) into a column, joining, then turning it back into rownames to fit the required formatting of the object. The rownames are cell identifiers. But then we couldn't make a DotPlot with the newly annotated full data set. It claimed that we had duplicate row names. Did various incantations, got it to work.
 
