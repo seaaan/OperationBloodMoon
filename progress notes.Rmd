@@ -7,6 +7,10 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+
+
+
+
 #2026-10-02
 We have some results to look at. 
 
