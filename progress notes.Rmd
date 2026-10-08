@@ -7,7 +7,12 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+#2026-10-08
+Quinn will present about what she has done for the PBMC scRNAseq at the next P4 meeting. 
 
+We are interested in discussing roles and who's in charge of each aspect of the project at the next meeting. 
+
+Rachel redid the clustering with resolution turned down to 0.8, still PCs 1:30. This reduced the number of clusters to 18 from ~40. She worked on manually annotating based on top markers per cluster
 
 
 
