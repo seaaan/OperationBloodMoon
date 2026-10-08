@@ -349,6 +349,7 @@ ggplot(umap, aes(umap_1, umap_2, color = seurat_clusters)) + facet_wrap(~Ptid) +
 # Select only those cells that have a seurat cluster (the "sketch" cells)
 for_azimuth <- subset(sketch, !is.na(seurat_clusters))
 
+
 # Have to run JoinLayers before Azimuth or you get an error 
 for_azimuth <- JoinLayers(for_azimuth)
 
@@ -358,7 +359,9 @@ for_azimuth <- AzimuthAPI::CloudAzimuth(for_azimuth, assay = "sketch")
 
 head(for_azimuth@meta.data)
 
+#how many occurrances of each label are there
 for_azimuth@meta.data %>% count(azimuth_label) %>% arrange(desc(n))
+
 
 DimPlot(for_azimuth, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
     repel = TRUE) + NoLegend() + 
@@ -372,6 +375,17 @@ for_azimuth@meta.data %>% ggplot(aes(x = seurat_clusters, fill = factor(azimuth_
 for_azimuth@meta.data %>% filter(str_detect(azimuth_label, "T cell")) %>%  ggplot(aes(x = seurat_clusters, fill = factor(azimuth_label))) + geom_bar() + coord_flip()
 
 DimPlot(for_azimuth, label = T, label.size = 3, reduction = 'umap', group.by = 'azimuth_medium') + NoLegend()
+
+
+
+DimPlot(for_azimuth, label = T, label.size = 3, reduction = 'umap', group.by = 'azimuth_medium') + NoLegend()
+
+
+for_azimuth@meta.data$azimuth_medium%>% unique()
+
+write_rds(for_azimuth, "data/rds_files/for_azimuth.rds")
+
+
 ```
 
 Groups
@@ -514,6 +528,103 @@ write_rds(projected, "data/rds_files/05-projected.rds")
 write_rds(JoinLayers(projected), "data/rds_files/06-projected_joined.rds")
 ```
 
+
+
+
+```{r}
+
+
+# THIS CHUNK MAPS EACH CELL CLUSTER TO AN ANNOTATION BASED ON AZIMUTH AND OUR
+# OBSERVATIONS
+
+# this time we are annotating based on the azimuth_medium category to start, rather than another one that was more detailed. 
+
+# describe each cluster with the most likely azimuth name
+cell_annotations <- for_azimuth@meta.data |> 
+   
+    # count number of cells with each label in each cluster
+    group_by(seurat_clusters, azimuth_medium) |> 
+    count() |> 
+    # for each cluster, use the most common label and count 
+    # the percent of cells with that label
+    group_by(seurat_clusters) |> 
+    arrange(desc(n)) |>
+    mutate(percent = n/sum(n)*100) |> 
+    slice(1) |> 
+    arrange(percent) |> 
+    # replace labels where we're not confident or there are multiplets
+    mutate(our_annotation = case_when(
+        seurat_clusters %in% c(7, 13) ~ "Multiplets",
+        percent < 60 ~ "Not confident", 
+        TRUE ~ azimuth_medium)) |> 
+    rename(cluster_full = seurat_clusters) |> 
+    select(cluster_full, our_annotation)
+
+
+
+
+
+
+
+# create a metadata data frame with our new cluster annotations
+# (merge with current metadata to get cell identifiers)
+new_annotation <- projected_joined@meta.data |> 
+    rownames_to_column() |> 
+    inner_join(cell_annotations, by = "cluster_full")
+rownames(new_annotation) <- new_annotation$rowname    
+new_annotation <- subset(new_annotation, select = -rowname)
+
+
+
+
+projected_joined <- read_rds("data/rds_files/06-projected_joined.rds")
+
+
+# add our_annotations into the metadata for projected 
+projected_joined <- AddMetaData(projected_joined, new_annotation)
+
+# make the default Ident be "our_annotation"
+# otherwise it gives a bunch of problems
+Idents(projected_joined) <- "our_annotation.y"
+
+#tell seurat that when we join layers we want it to be done on the sketch, not the full dataset (which is default)
+DefaultAssay(projected_joined)<-"sketch"
+
+
+#join the layers within the sketch
+projected_joined <-JoinLayers(projected_joined)
+
+
+#find the top markers characterizing the azimuth medium annotations, in the sketch data
+projected_joined_markers <-FindAllMarkers(projected_joined, assay = "sketch")
+
+
+# use the markers df to select the top10 genes by lofFC for each cluster
+
+top10<-projected_joined_markers %>%
+    group_by(cluster) %>%
+    filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup()
+
+
+#now make a heat map. Go back to our big seurat object which contains our expression levels and plot those top10 genes for each cluster that we discovered above. Expect 10 genes with higher expresion than others for each cluster. 
+DoHeatmap(projected_joined, features = top10$gene) +NoLegend()
+
+#what genes were make up the "T cell" group? We see that there are markers for different types of T cells within this group (expected), like IL17, CTLA4, ICOS, various levels of the different CD3's....
+projected_joined_markers %>%
+    group_by(cluster) %>%
+    filter(avg_log2FC > 1,
+        cluster == "T cell") %>%
+    arrange(p_val_adj) %>% View()
+    ungroup()
+
+
+
+
+
+```
+
 ## Plot projected data vs sketch and new annotations
 
 ```{r}
@@ -649,6 +760,80 @@ de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined
 #     split.by = "Phase")
 # VlnPlot(x_joined |> subset(our_annotation == "CD16 NK cell"), "SPPL2B", group.by = "Ptid", 
 #     split.by = "Phase")
+
+Idents(projected_joined) <- "Sample"
+to_plot <- projected_joined |> subset(downsample = 1000)
+
+de_genes <- list.files("results", full.names = TRUE, pattern = "de_genes") |> 
+    read_csv() |> 
+    bind_rows()
+
+
+
+VlnPlot(projected_joined |> subset(our_annotation == "CD8 T cell"), "HBB", 
+    group.by = "Ptid", split.by = "Phase")
+
+
+
+
+
+
+# function to test for differentially expressed genes by phase within specified
+# cell population, adjusting for ptid 
+do_de_test_pseudobulked <- function(data, annotation) {
+    print(paste("running", annotation))
+    # subset the seurat object to cells of interest
+    subsetted <- subset(data, subset = our_annotation == annotation) |> 
+        AggregateExpression(return.seurat = TRUE, group.by = c("Ptid", "Phase"))
+    
+    # specify comparison between phases
+    Idents(subsetted) <- "Phase"
+    
+    de_results <- FindMarkers(subsetted, 
+        ident.1 = "F",
+        ident.2 = "L",
+        test.use = "DESeq2") |> 
+        # store gene names in a column
+        rownames_to_column("gene") |> 
+        # record cell population
+        mutate(our_annotation = annotation) 
+    
+    # save a file with the results 
+    write_csv(de_results, paste0("results/", annotation, "_pseudobulked_de_genes.csv"))
+    
+    # return the results
+    de_results
+}
+
+do_de_test_pseudobulked(projected_joined, "CD8 T cell")
+
+
+cd8_DE <-read_csv("results/CD8 T cell_pseudobulked_de_genes.csv")
+
+projected_joined@meta.data$our_annotation %>% unique()
+
+
+ggplot(cd8_DE, aes(x = avg_log2FC, y = -log10(p_val)))+
+    geom_point()+
+    geom_hline(yintercept = -log10(0.05))
+
+
+
+
+cd8_DE %>%
+    filter(abs(avg_log2FC) >= 0.2,
+        p_val <= 0.05) %>% View()
+
+
+
+
+VlnPlot(projected_joined |> subset(our_annotation == "CD8 T cell"), "BBS10", 
+    group.by = "Ptid", split.by = "Phase")
+
+
+
+
+
 ```
 
 
