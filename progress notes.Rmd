@@ -7,6 +7,19 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+#2026-10-08 follow-up
+
+Sean ran two sets of DE testing overnight: 
+
+* Pseudobulked DEseq2 (unpaired)
+    * Ran quickly and through all populations
+* MAST with latent variable for ptid (paired)
+    * Ran overnight and failed on monocytes, so no results for monocytes or T cells
+
+Still to run are: 
+* Pseudobulked DEseq2 (paired)
+* MAST without the latent vairable for ptid (unpaired)
+
 #2026-10-08
 
 ## Meeting plans
