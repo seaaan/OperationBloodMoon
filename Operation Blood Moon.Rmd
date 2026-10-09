@@ -598,7 +598,7 @@ projected_joined <-JoinLayers(projected_joined)
 #find the top markers characterizing the azimuth medium annotations, in the sketch data
 projected_joined_markers <-FindAllMarkers(projected_joined, assay = "sketch")
 
-
+write_csv(projected_joined_markers, "results/all_markers_azimuth_medium_annotations.csv")
 # use the markers df to select the top10 genes by lofFC for each cluster
 
 top10<-projected_joined_markers %>%
@@ -706,7 +706,7 @@ DefaultAssay(projected_joined) <- "RNA"
 do_de_test <- function(data, annotation) {
     print(paste("running", annotation))
     # subset the seurat object to cells of interest
-    subsetted <- subset(data, subset = our_annotation == annotation) 
+    subsetted <- subset(data, subset = our_annotation.y == annotation) 
     
     # incantation that stops using BPCells and puts data into memory
     # necessary for running any FindMarkers test other than wilcox
@@ -783,7 +783,7 @@ VlnPlot(projected_joined |> subset(our_annotation == "CD8 T cell"), "HBB",
 do_de_test_pseudobulked <- function(data, annotation) {
     print(paste("running", annotation))
     # subset the seurat object to cells of interest
-    subsetted <- subset(data, subset = our_annotation == annotation) |> 
+    subsetted <- subset(data, subset = our_annotation.y == annotation) |> 
         AggregateExpression(return.seurat = TRUE, group.by = c("Ptid", "Phase"))
     
     # specify comparison between phases
@@ -804,6 +804,23 @@ do_de_test_pseudobulked <- function(data, annotation) {
     # return the results
     de_results
 }
+
+
+
+# get names of each population in reverse order of population size
+# so it runs the smallest populations first
+populations <- projected_joined@meta.data |> group_by(our_annotation.y) |> count() |> arrange(n) |> pull(our_annotation.y)
+
+
+DefaultAssay(projected_joined) <- "RNA"
+# run DE tests for every cell population PSEUDOBULKED
+de_genes_by_phase_pseudobulked <- map(populations, function(popn) do_de_test_pseudobulked(projected_joined, popn)) |> 
+    bind_rows()
+
+# run DE tests for every cell population MAST LATENT VAR
+de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined, popn)) |> 
+    bind_rows()
+
 
 do_de_test_pseudobulked(projected_joined, "CD8 T cell")
 
@@ -827,7 +844,7 @@ cd8_DE %>%
 
 
 
-VlnPlot(projected_joined |> subset(our_annotation == "CD8 T cell"), "BBS10", 
+VlnPlot(projected_joined |> subset(our_annotation == "HSC"), "GSPT1", 
     group.by = "Ptid", split.by = "Phase")
 
 
