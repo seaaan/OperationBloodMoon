@@ -739,6 +739,44 @@ do_de_test <- function(data, annotation) {
     de_results
 }
 
+# function to test for differentially expressed genes by phase within specified
+# cell population, adjusting for ptid 
+do_de_test_mast_unpaired <- function(data, annotation) {
+    print(paste("running", annotation))
+    # subset the seurat object to cells of interest
+    subsetted <- subset(data, subset = our_annotation.y == annotation) 
+    
+    # incantation that stops using BPCells and puts data into memory
+    # necessary for running any FindMarkers test other than wilcox
+    mat <- LayerData(subsetted, assay = "RNA", layer = "counts")
+    mat <- as(mat, "dgCMatrix")
+    subsetted[["RNA"]] <- CreateAssayObject(counts = mat)
+    
+    # delete the matrix object to save memory 
+    # (it has already been saved inside the Seurat object so is okay to delete)
+    rm(mat)
+    
+    # specify comparison between phases
+    Idents(subsetted) <- "Phase"
+    
+    de_results <- FindMarkers(subsetted, 
+        ident.1 = "F",
+        ident.2 = "L",
+        test.use = "MAST") |> 
+        # store gene names in a column
+        rownames_to_column("gene") |> 
+        # record cell population
+        mutate(our_annotation = annotation) 
+    
+    # save a file with the results 
+    write_csv(de_results, paste0("results/", annotation, "mast_unpaired_de_genes.csv"))
+    
+    print(de_results[1:5, ] |> as_tibble())
+    
+    # return the results
+    de_results
+}
+
 # testing
 # x <- subset(projected, downsample = 100)
 # x_joined <- JoinLayers(x)
@@ -801,6 +839,8 @@ do_de_test_pseudobulked <- function(data, annotation) {
     # save a file with the results 
     write_csv(de_results, paste0("results/", annotation, "_pseudobulked_de_genes.csv"))
     
+    print(de_results[1:5, ] |> as_tibble())
+    
     # return the results
     de_results
 }
@@ -819,6 +859,10 @@ de_genes_by_phase_pseudobulked <- map(populations, function(popn) do_de_test_pse
 
 # run DE tests for every cell population MAST LATENT VAR
 de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined, popn)) |> 
+    bind_rows()
+
+# run DE tests for every cell population with MAST LATENT VAR
+de_genes_by_phase_mast_unpaired <- map(populations, function(popn) do_de_test_mast_unpaired(projected_joined, popn)) |> 
     bind_rows()
 
 
