@@ -769,7 +769,7 @@ do_de_test_mast_unpaired <- function(data, annotation) {
         mutate(our_annotation = annotation) 
     
     # save a file with the results 
-    write_csv(de_results, paste0("results/", annotation, "mast_unpaired_de_genes.csv"))
+    write_csv(de_results, paste0("results/", annotation, "_mast_unpaired_de_genes.csv"))
     
     print(de_results[1:5, ] |> as_tibble())
     
@@ -777,44 +777,44 @@ do_de_test_mast_unpaired <- function(data, annotation) {
     de_results
 }
 
-# testing
-# x <- subset(projected, downsample = 100)
-# x_joined <- JoinLayers(x)
-# test <- do_de_test(x_joined, populations[8])
-
-projected_joined <- read_rds("data/rds_files/06-projected_joined.rds")
-
-# get names of each population in reverse order of population size
-# so it runs the smallest populations first
-populations <- projected_joined@meta.data |> group_by(our_annotation) |> count() |> arrange(n) |> pull(our_annotation)
-
-# run DE tests for every cell population
-de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined, popn)) |> 
-    bind_rows()
-
-# plots to gut check the de_genes results
-# VlnPlot(x_joined |> subset(our_annotation == "CD14 monocyte"), "CALR", group.by = "Phase")
-# VlnPlot(x_joined |> subset(our_annotation == "CD14 monocyte"), "CALR", group.by = "Ptid", 
-#     split.by = "Phase")
-# VlnPlot(x_joined |> subset(our_annotation == "CD16 NK cell"), "SPPL2B", group.by = "Ptid", 
-#     split.by = "Phase")
-
-Idents(projected_joined) <- "Sample"
-to_plot <- projected_joined |> subset(downsample = 1000)
-
-de_genes <- list.files("results", full.names = TRUE, pattern = "de_genes") |> 
-    read_csv() |> 
-    bind_rows()
-
-
-
-VlnPlot(projected_joined |> subset(our_annotation == "CD8 T cell"), "HBB", 
-    group.by = "Ptid", split.by = "Phase")
-
-
-
-
-
+# function to test for differentially expressed genes by phase within specified
+# cell population, adjusting for ptid 
+do_de_test_mast_unpaired_latent_nCount <- function(data, annotation) {
+    print(paste("running", annotation))
+    # subset the seurat object to cells of interest
+    subsetted <- subset(data, subset = our_annotation.y == annotation) 
+    
+    # incantation that stops using BPCells and puts data into memory
+    # necessary for running any FindMarkers test other than wilcox
+    mat <- LayerData(subsetted, assay = "RNA", layer = "counts")
+    mat <- as(mat, "dgCMatrix")
+    subsetted[["RNA"]] <- CreateAssayObject(counts = mat)
+    
+    # delete the matrix object to save memory 
+    # (it has already been saved inside the Seurat object so is okay to delete)
+    rm(mat)
+    
+    # specify comparison between phases
+    Idents(subsetted) <- "Phase"
+    
+    de_results <- FindMarkers(subsetted, 
+        ident.1 = "F",
+        ident.2 = "L",
+        test.use = "MAST", 
+        latent.vars = "nCount_RNA") |> 
+        # store gene names in a column
+        rownames_to_column("gene") |> 
+        # record cell population
+        mutate(our_annotation = annotation) 
+    
+    # save a file with the results 
+    write_csv(de_results, paste0("results/", annotation, "_mast_unpaired_latent_nCount_de_genes.csv"))
+    
+    print(de_results[1:5, ] |> as_tibble())
+    
+    # return the results
+    de_results
+}
 
 # function to test for differentially expressed genes by phase within specified
 # cell population, adjusting for ptid 
@@ -861,51 +861,52 @@ de_genes_by_phase_pseudobulked <- map(populations, function(popn) do_de_test_pse
 de_genes_by_phase <- map(populations, function(popn) do_de_test(projected_joined, popn)) |> 
     bind_rows()
 
-# run DE tests for every cell population with MAST LATENT VAR
+# run DE tests for every cell population without MAST LATENT VAR
 de_genes_by_phase_mast_unpaired <- map(populations, function(popn) do_de_test_mast_unpaired(projected_joined, popn)) |> 
     bind_rows()
 
+# run DE tests for every cell population with MAST LATENT VAR of nCount_RNA
+de_genes_by_phase_mast_unpaired_latent_ncount <- map(populations, function(popn) do_de_test_mast_unpaired_latent_nCount(projected_joined, popn)) |> 
+    bind_rows()
 
-do_de_test_pseudobulked(projected_joined, "CD8 T cell")
+# read in DE genes from text files
+de_genes <- tibble(
+    file = list.files("results", full.names = TRUE, pattern = "de_genes")
+) |> 
+    # only keep files with "de_genes" in their name
+    filter(str_detect(file, "de_genes")) |> 
+    # assign what model was used based on the file name
+    mutate(Model = case_when(
+        str_detect(file, "mast_unpaired_latent_nCount") ~ "MAST single unpaired nCount",
+        str_detect(file, "mast_unpaired_de") ~ "MAST single unpaired -",
+        str_detect(file, "pseudobulked_de") ~ "DESeq2 pseudobulked unpaired -",
+        # next on has to go last because all files contain "_de"
+        str_detect(file, "_de") ~ "MAST single paired Donor",
+    )) |> 
+    mutate(data = map(file, read_csv)) |> 
+    unnest(data)
 
 
-cd8_DE <-read_csv("results/CD8 T cell_pseudobulked_de_genes.csv")
+# for plotting, create a smaller object with 1000 cells per sample
+Idents(projected_joined) <- "Sample"
+to_plot <- projected_joined |> subset(downsample = 1000)
 
-projected_joined@meta.data$our_annotation %>% unique()
-
-
-ggplot(cd8_DE, aes(x = avg_log2FC, y = -log10(p_val)))+
-    geom_point()+
-    geom_hline(yintercept = -log10(0.05))
-
-
-
-
-cd8_DE %>%
-    filter(abs(avg_log2FC) >= 0.2,
-        p_val <= 0.05) %>% View()
-
-
-
-
-VlnPlot(projected_joined |> subset(our_annotation == "HSC"), "GSPT1", 
+VlnPlot(to_plot |> subset(our_annotation.y == "HSC"), "HBB", 
     group.by = "Ptid", split.by = "Phase")
 
-
-
+VlnPlot(projected_joined |> subset(our_annotation.y == "HSC"), "HBB", 
+    group.by = "Ptid", split.by = "Phase")
 
 
 ```
 
+TODO:
 
-
-TODO: 
-
-* Run FindAllMarkers on full dataset to identify top genes associated with each annotation
-    * Make nice dot plot justifying annotations based on top markers
-* Run DE on full projected data set
-* Plot number of cells in each cell type vs phase (i.e. are there more CD4 T cells during follicular than luteal?)
-* Switch to Hyak
+- Run FindAllMarkers on full dataset to identify top genes associated with each annotation
+  - Make nice dot plot justifying annotations based on top markers
+- Run DE on full projected data set
+- Plot number of cells in each cell type vs phase (i.e. are there more CD4 T cells during follicular than luteal?)
+- Switch to Hyak
 
 ```{r}
 sessionInfo()
