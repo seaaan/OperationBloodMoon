@@ -232,8 +232,6 @@ all_samples_merged_subset
 all_samples_merged
 ```
 
-
-
 ```{r}
 # THIS CHUNK RUNS SCTRANSFORM
 
@@ -528,9 +526,6 @@ write_rds(projected, "data/rds_files/05-projected.rds")
 write_rds(JoinLayers(projected), "data/rds_files/06-projected_joined.rds")
 ```
 
-
-
-
 ```{r}
 
 
@@ -698,6 +693,13 @@ DefaultAssay(projected_joined) <- "RNA"
 
 ## Differential expression
 
+| Function | sc or bulk | Test | Pairing | Latent var | File name |
+|----|----|----|----|----|----|
+| do_de_test | single-cell | MAST | paired | Ptid | de_genes |
+| do_de_test_mast_unpaired | single-cell | MAST | unpaired | None | mast_unpaired_de_genes |
+| do_de_test_mast_unpaired_latent_nCount | single-cell | MAST | unpaired | nCount_RNA | mast_unpaired_latent_nCount_de_genes |
+| do_de_test_pseudobulked | pseudobulk | DESeq2 | unpaired | None | pseudobulked_de_genes |
+
 ```{r}
 # THIS CHUNK CALCULATES DE GENES BY CYCLE PHASE
 
@@ -844,8 +846,6 @@ do_de_test_pseudobulked <- function(data, annotation) {
     # return the results
     de_results
 }
-
-
 
 # get names of each population in reverse order of population size
 # so it runs the smallest populations first
