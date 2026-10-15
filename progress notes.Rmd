@@ -7,6 +7,27 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+#2026-10-15
+
+We reviewed Quinn's code
+
+* She didn't use BPCells/sketch
+* For FindNeighbors she used dims 1:50 where we used dims 1:30
+* She experimented with different resolutions for clustering and settled on 0.4
+* For RunUMAP she used dims 1:50 where we used dims 1:30
+* FindAllMarkers - she used MAST to find top genes for each cluster, we used the default (Wilcoxon)
+* FindAllMarkers(..., max.cells.per.ident = 1000) does the subsetting for you
+* She annotated manually rather than using Azimuth or another automated system
+* For DEGs she removed mitochondrial and ribosomal genes first, we left them in
+* For DEGs she specified a minimum percent expression of 0.1, she used MAST, and she included nCount_RNA as a latent variable
+* She selected T cells and redid FindVariableFeatures etc to recluster them
+    * She used 40 dims for T cell neighbors and UMAP
+    * She manually reannotated
+    * After redoing it, she subset the T cell subset for clusters 0 to 11, we don't understand why. Is there a cluster 12 that's being left out or something?
+* She looked at whether any clusters had more follicular cells than luteal cells and vice versa using chi squared test
+
+
+
 #2026-10-08 follow-up
 
 Sean ran two sets of DE testing overnight: 
