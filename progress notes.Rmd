@@ -7,6 +7,27 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+# 2026-10-22
+
+We're starting on the Xenium analysis
+
+Hyak notes: 
+
+* /mmfs1/gscratch/iscrm/ is permanent data storage but limited in size and shared across all iscrm
+    * Install R libraries here within your personal drive
+    * Store scripts here
+* /mmfs1/gscratch/scrubbed is temporary data storage and deleted every 21 days if the file isn't touched
+    * Use this to store temporary .rds files and raw source data if the iscrm drive is full
+
+Seurat apptainer for Hyak:
+
+* Rachel downloaded a custom seurat container
+    * Choose "Custom"
+    * /mmfs1/gscratch/iscrm/rlp30/p4/seurat_5.5.0.sif
+
+We set the memory to 200 GB and had to use "compute-hugemem"
+
+
 #2026-10-15
 
 We reviewed Quinn's code
