@@ -27,6 +27,31 @@ Seurat apptainer for Hyak:
 
 We set the memory to 200 GB and had to use "compute-hugemem"
 
+Containers
+
+* We had a lot of problems with getting rachel's Seurat container to work. Claire and I could both open it via OnDemand but our personal symbolic links/home drives would not show up so we couldn't navigate the file system. 
+
+* We decided to install the container for ourselves. We followed these instructions: 
+
+    Step 1: 
+    ssh into hyak
+    
+    Step 2: (request a compute node)
+    salloc --account=iscrm --partition=compute --time=2:00:00 --mem=20G
+    
+    Step 3: (change to directory where container should reside)
+    cd /gscratch/iscrm/smhughes
+    
+    Step 4: (pull and install the container)
+    apptainer pull docker://satijalab/seurat:5.5.1
+    
+    Step 5: (bind the file system test the container)
+    apptainer shell --bind /gscratch/ seurat_5.5.1.sif
+
+    Step 6: (exit)
+    Run "exit" several time to exit the container, then the compute node, then the ssh session
+
+* When Sean did this, he still couldn't see his symbolic links in the Files pane. By clicking the "..." and entering "/mmfs1/gscratch/iscrm/smhughes" he could still navigate to the folder. Similarly, by entering the same thing into the "File Name" field at the top of the "Open Project" window, he could navigate to that folder. It only works if it starts with a leading /. 
 
 #2026-10-15
 
