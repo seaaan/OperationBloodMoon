@@ -1,0 +1,2933 @@
+---
+title: "PBMC Flex"
+output: html_document:
+  toc: true
+  toc_float: true
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(dplyr)
+library(stringr)
+library(Seurat)
+#library(BPCells)
+library(tidyverse)
+library(openxlsx)
+library(RColorBrewer)
+# needs to be set for large dataset analysis
+options(future.globals.maxSize = 1e9)
+
+```
+##Run this code to read in all the files. After doing this once, you don't need to do it again. Just read in the seurat objects
+```{r setup, include=FALSE}
+#Run this code to read in all the files. After doing this once, you don't need to do it again. Just read in the seurat objects
+
+# get a list of all the .h5 files exported from CellRanger
+files <- list.files("/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/", recursive = TRUE, 
+  full.names = TRUE) %>% 
+  # ONLY include the "sample_filtered_feature_bc_matrix.h5" files, 
+  # ignore all others
+  .[str_detect(., "sample_filtered_feature_bc_matrix.h5")]
+
+# convert file names vector to a dataframe containing the full file names
+# as well as the corresponding GEM and Sample name
+files_df <- tibble(Files = files) %>% 
+  mutate(GEM = str_extract(Files, "GEM.")) %>% 
+  mutate(Sample = str_extract(Files, "MP-\\d\\d*"))
+```
+#Create a function to read in all 96 data files (24 samples plit across 4 gems)
+```{r functions}
+# THIS CHUNK INCLUDES FUNCTIONS TO READ IN THE RAW FILES 
+
+# read in one h5 file, create a Seurat object, add metadata
+# the function takes a single row of a data frame
+#     the data frame should include the file name, the GEM, and the Sample
+# add GEM and Sample to the meta.data of the resulting Seurat object
+read_one_file <- function(files_df_row) {
+  one_file <- Read10X_h5(files_df_row$Files) %>% CreateSeuratObject()
+   #add metadata
+  one_file$GEM <- files_df_row$GEM
+  one_file$Sample <- files_df_row$Sample
+  
+  one_file
+}
+
+##BPCells is not compatible with MAST, which is required to determine DEG between clusters in the annotation process, so this way of reading in the raw files will not work
+
+# use the BPCells package to put a Seurat object on disk to save memory
+#put_on_disk <- function(obj) {
+#  sample_id <- obj@meta.data$Sample[1]
+#  
+#  BPCells::write_matrix_dir(mat = obj[["RNA"]]$counts, dir = paste0('data/temp/', sample_id))
+#  counts.mat <- BPCells::open_matrix_dir(dir = paste0('data/temp/', sample_id))
+#  obj[["RNA"]]$counts <- counts.mat
+  
+#  obj  
+#}
+
+# read and combine all four GEM files for 1 sample
+# Each sample is split across the 4 GEMs
+# Given a sample name (e.g. "MP-1"), this function reads the 
+# 4 h5 files for the sample (from each GEM) and combines them
+# Then it puts the object on disk to save memory
+read_one_sample <- function(sample) {
+  # filter for the files just for one sample
+  one_sample <- files_df %>% 
+    filter(Sample == sample)
+  
+  # read in all 4 GEMs for one sample
+  one_sample_list <- list(
+    read_one_file(one_sample[1,]),
+    read_one_file(one_sample[2,]),
+    read_one_file(one_sample[3,]),
+    read_one_file(one_sample[4,])
+  )
+  
+  # merge together the four samples
+  one_sample_merged <- merge(
+                        # select first list element
+                        one_sample_list[[1]],
+                        # merge with every element except the first
+                        one_sample_list[-1], 
+                        add.cell.ids = c("GEM1", "GEM2", "GEM3", "GEM4") 
+                       )
+
+  
+  # JoinLayers converts from one "counts layer" per GEM
+  # to one per sample
+  one_sample_merged %>% 
+    JoinLayers() 
+ #   put_on_disk()
+}
+
+# test code to make sure each function works
+# sample_1 <- read_one_sample("MP-1")
+# sample_2 <- read_one_sample("MP-2")
+# test <- merge(sample_1, sample_2, add.cell.ids = c("MP-1", "MP-2"))
+```
+###Read in the raw files
+```{r}
+## THIS CHUNK READS IN THE RAW FILES AND MERGES THEM INTO A SEURAT OBJECT
+
+# Read in every sample
+# This results in a list of seurat objects (one per sample)
+all_samples <- lapply(unique(files_df$Sample), read_one_sample)
+
+# save list of seurat objects
+write_rds(all_samples, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/01-list_of_samples.rds")
+
+```
+###Merge the files into one seurat object
+```{r}
+# THIS CHUNK MERGES THE LIST OF SEURAT OBJECTS INTO A SINGLE OBJECT
+
+# Combine list of seurat objects into a single Seurat object
+all_merged <- merge(
+                        # select first list element
+                        all_samples[[1]],
+                        # merge with every element except the first
+                        all_samples[-1], 
+                        add.cell.ids =  unique(files_df$Sample)
+                        )
+```
+###Add meta bata (patient ID and menstrual cycle phase) to the object
+```{r}
+# THIS CHUNK ADDS METADATA (PTID AND PHASE) TO THE SAMPLES
+
+# To add metadata with AddMetaData, you need a dataframe with rownames that match 
+# the rownames from the SeuratObject 
+# Steps:
+# 1. Load metadata from file
+metadata <- readxl::read_excel("/home/qpeters/scRNAseq/P4_PBMC_FLEX/PBMC-multilab plan for Innovation Lab_9feb26.xlsx", sheet = "Prlic") %>% 
+    mutate(Phase = str_sub(`Sample ID`, 8, 8),
+        Ptid = str_sub(`Sample ID`, 1, 7))
+
+# 2. Select columns you want to add 
+to_add <- metadata %>% 
+    select(Sample = `Tube sample`, Ptid, Phase) %>% 
+    as.data.frame()
+
+# 3. Get the metadata out of the Seurat object because it has the rownames
+old_meta_data <- all_merged@meta.data %>% 
+    mutate(Rownames = rownames(.))
+
+# 4. Merge the two metadata objects by sample. This associates all your new metadata
+# with the appropriate cell identifiers in the rownames. Make sure to keep the rownames
+# which tidyverse removes
+new_meta_data <- merge(old_meta_data, to_add, by = "Sample")
+rownames(new_meta_data) <- new_meta_data$Rownames
+new_meta_data <- select(new_meta_data, -Rownames)
+
+# 5. Add the new metadata to the Seurat Object
+all_merged <- AddMetaData(all_merged, new_meta_data)
+
+write_rds(all_merged, file = "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/02-merged.rds")
+```
+#Check QC metrics and filter out low quality cells and doublets
+```{r}
+# THIS CHUNK CHECKS THE QC METRICS AND FILTERS OUT LOW QUALITY CELLS
+
+# check QC metrics
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+
+all_merged[["percent.mt"]] <- PercentageFeatureSet(all_merged, pattern = "^MT-")
+
+# Visualize QC metrics as a violin plot
+# have some cells with  really high transcript counts, most cells have info about ~2k genes, a few cells have a higher percentage of mt transcripts
+
+VlnPlot(all_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/violins_by_qc_unfilterd.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "GEM")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/violins_by_gem.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Phase")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/violins_by_phase.png", width = 6, height = 4, dpi = 600)
+
+VlnPlot(all_merged, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Ptid")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/violins_by_ptid.png", width = 8, height = 4, dpi = 600)
+
+#dropoff at about 20k
+all_merged$nCount_RNA  %>%  
+    hist(breaks= 100)
+
+#lowest counts are around 450
+sort(all_merged$nCount_RNA) %>% tail(n = 20)
+#highest are around 140k
+sort(all_merged$nCount_RNA) %>% head(n = 20)
+
+#dropoff at about 6k
+all_merged$nFeature_RNA  %>%  
+    hist(breaks= 100)
+
+#highest is around 8500
+sort(all_samples_merged$nFeature_RNA) %>% tail(n = 20)
+#lowest are around 40
+sort(all_samples_merged$nFeature_RNA) %>% head(n = 20)
+
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+plot1 <- FeatureScatter(subset(all_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "percent.mt")
+
+
+plot2 <- FeatureScatter(subset(all_merged,downsample = 300), feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/scatter_unfiltered.png", width = 8, height = 4, dpi = 600)
+#subset for nCount, nFeature and percent.mt. Tutorial does not have an nCount subset but we are adding one because we don't want info from the cells that only have a few transcripts read
+#our cutoffs are based on the histograms made above
+
+all_subset <- subset(all_merged, 
+    subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 10 & nCount_RNA < 5000)
+
+# save merged seurat object
+write_rds(all_subset, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/02-merged.rds")
+
+#check violins again after subsetting
+VlnPlot(all_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/violins_by_qc_filterd.png", width = 6, height = 4, dpi = 600)
+
+```
+
+#Basic workflow: normalize, find variable features, scale data, run PCA, and cluster all the cells among the 20 samples
+
+```{r}
+# It can be useful to save the object after computational steps that take a long time as a precaution
+
+# 1 Normalize data
+#SCTransform didn't work and isn't compatible with MAST, so we're using NormalizeData
+all_subset <- NormalizeData(all_subset, assay = "RNA", verbose = T)
+
+# 2 Find Variable Features
+all_subset <- FindVariableFeatures(all_subset, selection.method = "vst", verbose = T)
+
+# 3 Scale Data
+RNA_names <- rownames(all_subset)
+all_subset <- ScaleData(all_subset, features = RNA_names)
+
+# 4 Run PCA and check dimensionality of the data
+all_subset <- RunPCA(all_subset, pc.genes = RNA_names, npcs = 75, verbose = T)
+ElbowPlot(all_subset, ndims = 75)
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/ElbowPlot.png", dpi = 300, width = 10, height = 6)
+
+# 5 Find nearest neighbors
+all_subset <- FindNeighbors(all_subset, dims = 1:50)
+
+# 6 Cluster with default resolution (0.8)
+all_subset <- FindClusters(all_subset, resolution = 0.8)
+
+# 7 Create UMAP
+all_subset <- RunUMAP(all_subset, dims = 1:50, return.model = T)
+
+#save seurat object
+write_rds(all_subset, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/06-DR-object.rds")
+
+```
+#Visualize clusters
+```{r}
+DimPlot(all_subset, label = T, label.size = 3, reduction = "umap")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/umap_all_samples.png", width = 10, height = 10, dpi = 600)
+
+```
+
+###The UMAP looks overclustered, so re-running with a lower resolution
+```{r}
+all_subset <- FindClusters(all_subset, resolution = 0.2, random.seed = 42)
+DimPlot(all_subset, label = T, label.size = 3, reduction = "umap")
+
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/umap_all_samples_res0.2.png", width = 10, height = 10, dpi = 600)
+```
+###The UMAP looks underclustered, so re-running with a slightly resolution
+```{r}
+all_subset <- FindClusters(all_subset, resolution = 0.4, random.seed = 42)
+DimPlot(all_subset, label = T, label.size = 3, reduction = "umap")
+write_rds(all_subset, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/06-DR-object.rds")
+
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/umap_all_samples_res0.4.png", width = 10, height = 10, dpi = 600)
+
+
+```
+###Violin plots to see if there are clusters that are outliers by QC metrics
+```{r}
+VlnPlot(all_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "seurat_clusters")
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/allcells_Violin.png"), 
+       plot = last_plot(), dpi = 300, width = 20, height = 5)
+```
+#####Feature plots to look at speciifc genes
+
+```{r}
+FeaturePlot(all_subset, reduction = "umap", features = c("CD3E"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_CD3E.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("CD3D"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_CD3D.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("CD14"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_CD14.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("CD4"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_CD4.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("CD8A"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_CD8A.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("MS4A1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_MS4A1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("IL2RA"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_IL2RA.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("KLRB1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_KLRB1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("FCGR3A"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_FCGR3A.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("NCAM1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_NCAM1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("FCER1A"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_FCER1A.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("ITGAX"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_ITGAX.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("FLT3"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_FLT3.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("IL3RA"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_IL3RA.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("GATA2"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_GATA2.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("CCR7"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_CCR7.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("TCF7"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_TCF7.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("GZMB"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_GZMB.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("MKI67"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_MKI67.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("FOXP3"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_FOXP3.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("TRDC"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_TRDC.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("TRGC1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_TRGC1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("FKBP5"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_FKBP5.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("MYB"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_NKG7.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("ZBTB16"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_NKG7.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(all_subset, reduction = "umap", features = c("PGR"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_PGR.png", dpi = 300, width = 12, height = 10)
+sum(FetchData(all_subset, vars = "PGR") > 0)
+# 5
+
+FeaturePlot(all_subset, reduction = "umap", features = c("ESR1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_ESR1.png", dpi = 300, width = 12, height = 10)
+sum(FetchData(all_subset, vars = "ESR1") > 0)
+```
+#####Heatmap to show DEGs between each cluster determined by MAST
+```{r}
+#Crahes unless you run downsampling
+all_subset[["RNA"]] <- JoinLayers(all_subset[["RNA"]])
+
+markers.all <- FindAllMarkers(all_subset,
+                                only.pos = TRUE, 
+                                logfc.threshold = 0.25,
+                                test.use = "MAST",
+                                verbose = T,
+                                latent.vars = "nCount_RNA",
+                                max.cells.per.ident = 1000,
+                                random.seed = 1)
+
+
+write.xlsx(markers.all, file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_cluster_markers_res0.4.xlsx"))
+
+top10 <- markers.all %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_log2FC)
+
+color.vector <- c(brewer.pal(8, "Set1"), brewer.pal(12, "Set3"), brewer.pal(8, "Dark2"), brewer.pal(8, "Accent"))
+heatmap <- DoHeatmap(subset(all_subset, downsample = 1000), 
+                                   features = top10$gene, 
+                                   group.bar = T,
+                                   group.colors = color.vector,
+                                   draw.lines = F,
+                                   angle = 0,
+                                   disp.min = -1.5, disp.max = 1.5,
+                                   raster = F)
+
+heatmap <- heatmap + scale_fill_gradientn(colors = c("#440154FF", "#238A8DFF", "#FDE725FF")) 
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/all_cells_cluster_markers_res0.4.png"), plot = heatmap, dpi = 300, width = 24, height = 30)
+
+```
+
+#####Dot plot to look at top genes in each cluster
+https://www.datanovia.com/learn/bioinformatics/single-cell/scrnaseq-marker-genes-annotation
+```{r}
+DotPlot(all_subset, features = c("CD3D", "CD4", "CD8A", "TRGC1", "TRDC", "ZBTB16", "NCAM1", 
+                                 "NKG7","MS4A1", "CD14", "LYZ", "FCGR3A", "FCER1A", "ITGAX", 
+                                 "IL3RA", "CD74", "PPBP", "PF4", "MYB", "CCR7", "TCF7", "IL7R",
+                                 "CD27", "SELL", "TBX21", "ITGB1", "FOXP3", 
+                                 "LEF1", "CD69", "KLRG1", "CD2", "KLRB1", "MKI67", "IKZF2", 
+                                 "ENTPD1", "PDCD1", "CCR5", "KLRD1", "GZMA", "PRF1", "GZMB", 
+                                 "GZMK", "GZMH", "AREG") %>% rev() , group.by = "seurat_clusters", 
+        dot.scale = 10, scale = T, col.min = -0.4, col.max = 0.4, scale.min = 0, scale.max = 75) + coord_flip() + RotatedAxis() + theme(plot.background = element_rect(fill="white"), )
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/allcells_Bubbleplot.png"), 
+       plot = last_plot(), dpi = 300, width = 20, height = 15)
+```
+
+#Annotate clusters based on feature plots and cluster DEGs
+
+```{r}
+#Check the identities of the object
+table(Idents(all_subset))
+
+new.cluster.ids <- c("0" = "T cells",
+                     "1" = "T cells", 
+                      "2" = "T cells", 
+                      "3" = "T cells", 
+                      "4" = "NK cells", 
+                      "5" = "B cells",
+                      "6" = "T cells", 
+                      "7" = "T cells", 
+                      "8" = "B cells", 
+                      "9" = "T cells", 
+                      "10" =  "T cells", 
+                      "11" = "T cells",
+                      "12" = "Classic Monocytes",
+                      "13" = "Unknown",
+                      "14" = "T cells",
+                      "15" = "Platlets",
+                      "16" = "Platlets",
+                      "17" = "NK cells",
+                      "18" = "T cells",
+                      "19" = "Unknown",
+                      "20" = "B cells",
+                      "21" = "Non-classical Monocytes",
+                      "22" = "APCs",
+                      "23" = "T cells",
+                      "24" = "B cells",
+                      "25" = "APCs",
+                      "26" = "NK cells",
+                      "27" = "T cells",
+                      "28" = "Unknown")
+
+names(new.cluster.ids) <- levels(all_subset)
+all_subset <- RenameIdents(all_subset, new.cluster.ids)
+
+#Check the new identities of the object to make sure they've changed
+table(Idents(all_subset))
+
+DimPlot(all_subset, reduction = "umap", label = TRUE, pt.size = 0.5)
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation/allcells_umap_labeled.png"), plot = last_plot(), dpi = 300, width = 12, height = 10)
+```
+#Subset Treg cluster 
+```{r}
+# Create a new Seurat object with selected cluster Treg
+Treg_subset <- subset(all_subset, idents = c("10"))
+
+# Filter out mitochondrial genes for DEG analysis
+all.genes <- rownames(Treg_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", all.genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(all.genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+
+##DE genes between F and L phases among Treg (cluster 10)
+
+```{r}
+Idents(Treg_subset) <-"Phase"
+markers.all.Treg_subset <- FindMarkers(object = Treg_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.Treg_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/Treg_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.Treg_subset) <- markers.all.Treg_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.Treg_subset$avg_log2FC > 0.4 & markers.all.Treg_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.Treg_subset$avg_log2FC < -0.4 & markers.all.Treg_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+Treg.volcano <- EnhancedVolcano(markers.all.Treg_subset,
+                               lab = rownames(markers.all.Treg_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "Treg F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+Treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/Treg_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+ VlnPlot(Treg_subset, features = c("JUN", "SLC25A20"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/Treg_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+#Subset NK clusters
+```{r}
+# Create a new Seurat object with selected clusters of NK cells
+NK_subset <- subset(all_subset, idents = c("17", "4", "26"))
+
+NK_subset[["RNA"]] <- as(NK_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+NK.genes <- rownames(NK_subset@assays$RNA@counts)
+NK.genes.filtered.mt <- grep(pattern = "^MT-", NK.genes, value = TRUE, invert = TRUE)
+NK.genes.filtered <- as.vector(grep(pattern = "^RP", NK.genes.filtered.mt, value = TRUE, invert = TRUE))
+length(NK.genes)
+# [1] 18133
+length(NK.genes.filtered)
+# [1] 18079
+
+
+```
+
+##DE genes between F and L phases among NK cells
+
+```{r}
+Idents(NK_subset) <-"Phase"
+markers.all.NK_subset <- FindMarkers(object = NK_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = NK.genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.NK_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/NK_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.NK_subset) <- markers.all.NK_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.NK_subset$avg_log2FC > 0.4 & markers.all.NK_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.NK_subset$avg_log2FC < -0.4 & markers.all.NK_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+NK.volcano <- EnhancedVolcano(markers.all.NK_subset,
+                               lab = rownames(markers.all.NK_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "NK F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+NK.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/NK_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+ VlnPlot(NK_subset, features = c("FKBP5", "UTS2"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/NK_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+#Subset B cell clusters
+```{r}
+# Create a new Seurat object with selected clusters of B cells
+B_subset <- subset(all_subset, idents = c("20", "5", "24", "8"))
+
+B_subset[["RNA"]] <- as(B_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+B.genes <- rownames(B_subset@assays$RNA@counts)
+B.genes.filtered.mt <- grep(pattern = "^MT-", B.genes, value = TRUE, invert = TRUE)
+B.genes.filtered <- as.vector(grep(pattern = "^RP", B.genes.filtered.mt, value = TRUE, invert = TRUE))
+length(B.genes)
+# [1] 18133
+length(B.genes.filtered)
+# [1] 18079
+
+
+```
+
+##DE genes between F and L phases among B cells
+
+```{r}
+Idents(B_subset) <-"Phase"
+markers.all.B_subset <- FindMarkers(object = B_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = B.genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.B_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/B_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.B_subset) <- markers.all.B_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.B_subset$avg_log2FC > 0.4 & markers.all.B_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.B_subset$avg_log2FC < -0.4 & markers.all.B_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+B.volcano <- EnhancedVolcano(markers.all.B_subset,
+                               lab = rownames(markers.all.B_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "B cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+B.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/B_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+ VlnPlot(B_subset, features = c("FKBP5", "IL7R"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/B_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+#Subset Naive CD8 cells 
+```{r}
+# Create a new Seurat object with selected clusters of B cells
+CD8n_subset <- subset(all_subset, idents = c("2"))
+
+CD8n_subset[["RNA"]] <- as(CD8n_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+CD8n.genes <- rownames(CD8n_subset@assays$RNA@counts)
+CD8n.genes.filtered.mt <- grep(pattern = "^MT-", CD8n.genes, value = TRUE, invert = TRUE)
+CD8n.genes.filtered <- as.vector(grep(pattern = "^RP", CD8n.genes.filtered.mt, value = TRUE, invert = TRUE))
+length(CD8n.genes)
+# [1] 18133
+length(CD8n.genes.filtered)
+# [1] 18079
+
+
+```
+
+##DE genes between F and L phases among naive CD8 T cells
+
+```{r}
+Idents(CD8n_subset) <-"Phase"
+markers.all.CD8n_subset <- FindMarkers(object = CD8n_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = CD8n.genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.CD8n_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/CD8n_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.CD8n_subset) <- markers.all.CD8n_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.CD8n_subset$avg_log2FC > 0.4 & markers.all.CD8n_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.CD8n_subset$avg_log2FC < -0.4 & markers.all.CD8n_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+CD8n.volcano <- EnhancedVolcano(markers.all.CD8n_subset,
+                               lab = rownames(markers.all.CD8n_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "naive CD8 T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+CD8n.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/CD8n_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+```
+
+#Subset gd T cells 
+```{r}
+# Create a new Seurat object with selected clusters of B cells
+gd_subset <- subset(all_subset, idents = c("11"))
+
+gd_subset[["RNA"]] <- as(gd_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+gd.genes <- rownames(gd_subset@assays$RNA@counts)
+gd.genes.filtered.mt <- grep(pattern = "^MT-", gd.genes, value = TRUE, invert = TRUE)
+gd.genes.filtered <- as.vector(grep(pattern = "^RP", gd.genes.filtered.mt, value = TRUE, invert = TRUE))
+length(gd.genes)
+# [1] 18133
+length(gd.genes.filtered)
+# [1] 18079
+
+
+```
+
+##DE genes between F and L phases among gd T cells
+
+```{r}
+Idents(gd_subset) <-"Phase"
+markers.all.gd_subset <- FindMarkers(object = gd_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = gd.genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.gd_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/gdTcells_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.gd_subset) <- markers.all.gd_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.gd_subset$avg_log2FC > 0.4 & markers.all.gd_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.gd_subset$avg_log2FC < -0.4 & markers.all.gd_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+gd.volcano <- EnhancedVolcano(markers.all.gd_subset,
+                               lab = rownames(markers.all.gd_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "gd T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+gd.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/gdTcells_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(gd_subset, features = c("FKBP5", "PDE4D"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG/gdTcell_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+#Subset T cells to make a new object 
+```{r}
+#Combine all the clusters that express CD3D and don't express CD14 or CD20 or NCAM1 and NKG7 
+Tcell_subset <- subset(all_subset, idents = c("11", "7", "18", "3", "9", "6", "14", "6", "1", "27", "10", "0", "23"))
+
+Tcell_subset <- FindVariableFeatures(Tcell_subset, selection.method = "vst", verbose = T)
+
+RNA_names <- rownames(Tcell_subset)
+Tcell_subset <- ScaleData(Tcell_subset, features = RNA_names)
+
+Tcell_subset <- RunPCA(Tcell_subset, pc.genes = RNA_names, npcs = 75, verbose = T)
+ElbowPlot(Tcell_subset, ndims = 75)
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/ElbowPlot_Tcells.png", dpi = 300, width = 10, height = 6)
+write_rds(Tcell_subset, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/07-Tcell-object.rds")
+
+Tcell_subset <- FindNeighbors(Tcell_subset, dims = 1:40)
+Tcell_subset <- FindClusters(Tcell_subset, resolution = 0.8)
+Tcell_subset <- RunUMAP(Tcell_subset, dims = 1:40, return.model = T)
+
+# save object
+write_rds(Tcell_subset, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/07-Tcell-object.rds")
+
+DimPlot(Tcell_subset, label = T, label.size = 3, reduction = "umap")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/umap_Tcells.png", width = 10, height = 10, dpi = 600)
+
+```
+```{r}
+Tcell_subset <- FindClusters(Tcell_subset, resolution = 0.4)
+DimPlot(Tcell_subset, label = T, label.size = 3, reduction = "umap")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/umap_Tcells_res0.4.png", width = 10, height = 10, dpi = 600)
+
+```
+###Dotplot to look at key genes across clusters
+```{r}
+DotPlot(Tcell_subset, features = c("CD4", "CD8A", "TRGC1", "TRDC", "ZBTB16", "TRAC", "TRBC1", "NKG7", 
+                                 "FCGR3A", "MYB", "CCR7", "IL7R",
+                                 "CD27", "LEF1", "SELL", "ITGB1", "TCF7", "TBX21", "IKZF2", "EOMES", "PRDM1", "BATF", "FOXP3", "GATA3", "RORC", 
+                                  "CD69", "KLRG1", "CD28", "MKI67", 
+                                 "ENTPD1", "PDCD1", "CCR5", "CXCR4", "PRF1", "GZMA", "GZMB", 
+                                 "GZMK", "GZMH", "AREG") %>% rev() , group.by = "seurat_clusters", 
+        dot.scale = 10, scale = T, col.min = -0.4, col.max = 0.4, scale.min = 0, scale.max = 75) + coord_flip() + RotatedAxis() + theme(plot.background = element_rect(fill="white"), )
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_Bubbleplot.png"), 
+       plot = last_plot(), dpi = 300, width = 15, height = 14)
+```
+
+###Heatmap to show DE genes between clusters of the T cell object
+```{r}
+#Crashes unless you run downsampling
+Tcell_subset[["RNA"]] <- JoinLayers(Tcell_subset[["RNA"]])
+
+markers.T <- FindAllMarkers(Tcell_subset,
+                                only.pos = TRUE, 
+                                logfc.threshold = 0.25,
+                                test.use = "MAST",
+                                verbose = T,
+                                latent.vars = "nCount_RNA",
+                                max.cells.per.ident = 1000,
+                                random.seed = 1)
+
+
+write.xlsx(markers.T, file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_cluster_markers_res0.4.xlsx"))
+
+top10 <- markers.all %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_log2FC)
+
+color.vector <- c(brewer.pal(8, "Set1"), brewer.pal(12, "Set3"), brewer.pal(8, "Dark2"), brewer.pal(8, "Accent"))
+heatmap <- DoHeatmap(subset(Tcell_subset, downsample = 1000), 
+                                   features = top10$gene, 
+                                   group.bar = T,
+                                   group.colors = color.vector,
+                                   draw.lines = F,
+                                   angle = 0,
+                                   disp.min = -1.5, disp.max = 1.5,
+                                   raster = F)
+
+heatmap <- heatmap + scale_fill_gradientn(colors = c("#440154FF", "#238A8DFF", "#FDE725FF")) 
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_cluster_markers_res0.4.png"), plot = heatmap, dpi = 300, width = 24, height = 30)
+```
+
+###Feature plots to look at specific genes
+```{r}
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("CD4"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_CD4.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("CD8A"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_CD8A.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("CCR7"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_CCR7.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("KLRG1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_KLRG1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("TRDC"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_TRDC.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("TRGC1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_TRGC1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("FOXP3"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_FOXP3.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("IL2RA"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_IL2RA.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("GZMB"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_GZMB.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("ZBTB16"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_ZBTB16.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("NCAM1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_NCAM1.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("FCGR3A"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_FCG3RA.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("FKBP5"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_FKBP5.png", dpi = 300, width = 12, height = 10)
+```
+
+###T cell clusters by QC info
+
+```{r}
+#Violin plot showing number of features, transcript counts, and %mt dna in each cluster to see if we need to exclude any
+VlnPlot(Tcell_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_Violin_clusters.png"), 
+       plot = last_plot(), dpi = 300, width = 20, height = 5)
+
+#Number of cells in each cluster
+Tcell.counts <- as.data.frame(table(Tcell_subset$seurat_clusters))
+colnames(Tcell.counts) <- c("Cluster", "Count")
+# Create a bar plot (histogram-style) of cell counts per cluster
+ggplot(Tcell.counts, aes(x = Cluster, y = Count, fill = Cluster)) +
+  geom_col(show.legend = FALSE) +
+  theme_classic() +
+  labs(x = "Cluster", y = "Number of Cells", title = "Cells per Cluster")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/TcellsClusterCounts_Barplot.png"), plot = last_plot(), dpi = 300, width = 10, height = 5)
+```
+
+#####Remove low QC clusters from T cell object
+
+```{r}
+#Combine all the clusters that express CD3D and don't express CD14 or CD20 or NCAM1 and NKG7 
+Tcell_subset <- subset(Tcell_subset, idents = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"))
+
+write_rds(Tcell_subset, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/08-Tcell-object-filtered.rds")
+
+VlnPlot(Tcell_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_Violin_clusters_filtered.png"), 
+       plot = last_plot(), dpi = 300, width = 20, height = 5)
+
+#Number of cells in each cluster
+Tcell.counts <- as.data.frame(table(Tcell_subset$seurat_clusters))
+colnames(Tcell.counts) <- c("Cluster", "Count")
+# Create a bar plot (histogram-style) of cell counts per cluster
+ggplot(Tcell.counts, aes(x = Cluster, y = Count, fill = Cluster)) +
+  geom_col(show.legend = FALSE) +
+  theme_classic() +
+  labs(x = "Cluster", y = "Number of Cells", title = "Cells per Cluster")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/TcellsClusterCounts_Barplot_filtered.png"), plot = last_plot(), dpi = 300, width = 10, height = 5)
+
+#Contribution of each donor to each cluster
+meta_df <- FetchData(Tcell_subset, vars = c("seurat_clusters", "Ptid"))
+ggplot(meta_df, aes(x = Idents(Tcell_subset), fill = Ptid)) +
+  geom_bar(position = "fill") +
+  labs(
+    x = "Cluster",
+    y = "Proportion by Donor",
+    fill = "Donor"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/TcellsCluster_by_Donor_filtered.pdf"), plot = last_plot(), dpi = 300, width = 10, height = 5)
+
+#Contribution of each phase to each cluster
+meta_df <- FetchData(Tcell_subset, vars = c("seurat_clusters", "Phase"))
+ggplot(meta_df, aes(x = Idents(Tcell_subset), fill = Phase)) +
+  geom_bar(position = "fill") +
+  labs(
+    x = NULL,
+    y = "Proportion by Phase",
+    fill = "Phase"
+  ) + scale_fill_manual(values = c("L" = "firebrick", "F" = "dodgerblue3")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.text = element_text(size = 14),
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+     legend.title = element_text(size = 14))
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/TcellsCluster_by_Phase_filtered.pdf"), plot = last_plot(), dpi = 300, width = 10, height = 6)
+
+```
+
+#####Are any clusters differentially apparent by phase
+
+```{r}
+clusters  <- as.character((Tcell_subset$seurat_clusters)) # or seurat_obj$seurat_clusters
+samples   <- as.character(Tcell_subset$orig.ident)
+condition <- as.character(Tcell_subset$Phase)
+
+# Create a raw count table
+counts_matrix <- table(clusters, condition)
+
+# Run Chi-Square test
+chisq_test <- chisq.test(counts_matrix)
+print(chisq_test)
+
+
+	#Pearson's Chi-squared test
+
+#data:  counts_matrix
+#X-squared = 690.48, df = 11, p-value < 2.2e-16
+
+#values > 2 or < -2 are significant
+chisq_test$residuals
+
+#clusters            F            L
+#     0   -0.16047617   0.15586691
+#      1    5.46617786  -5.30917633
+#      10  -1.98536961   1.92834511
+#      11   1.11588966  -1.08383868
+#      2    8.18463270  -7.94955072
+#      3  -15.32438014  14.88422775
+#      4   -2.94897893   2.86427729
+#      5   -0.09909148   0.09624534
+#      6    0.06821566  -0.06625634
+#      7    3.10878622  -3.01949454
+#      8    0.03409879  -0.03311939
+#      9   -0.06004799   0.05832327
+
+
+# Convert residuals to two-tailed p-values
+raw_p_values <- 2 * pnorm(abs(chisq_test$residuals), lower.tail = FALSE)
+
+# Apply Bonferroni correction for your 11 variables
+adjusted_p_values <- p.adjust(raw_p_values, method = "bonferroni")
+
+# View the specific row matching your variable of interest
+print(as.data.frame(adjusted_p_values))
+
+```
+
+####Remake Heatmap to show DE genes between clusters of the T cell object
+
+```{r}
+#Crashes unless you run downsampling
+Tcell_subset[["RNA"]] <- JoinLayers(Tcell_subset[["RNA"]])
+
+markers.T <- FindAllMarkers(Tcell_subset,
+                                only.pos = TRUE, 
+                                logfc.threshold = 0.25,
+                                test.use = "MAST",
+                                verbose = T,
+                                latent.vars = "nCount_RNA",
+                                max.cells.per.ident = 1000,
+                                random.seed = 1)
+
+
+write.xlsx(markers.T, file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_cluster_markers_res0.4_filtered.xlsx"))
+
+top10 <- markers.T %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_log2FC)
+
+color.vector <- c(brewer.pal(8, "Set1"), brewer.pal(12, "Set3"), brewer.pal(8, "Dark2"), brewer.pal(8, "Accent"))
+heatmap <- DoHeatmap(subset(Tcell_subset, downsample = 1000), 
+                                   features = top10$gene, 
+                                   group.bar = T,
+                                   group.colors = color.vector,
+                                   draw.lines = F,
+                                   angle = 0,
+                                   disp.min = -1.5, disp.max = 1.5,
+                                   raster = F)
+
+heatmap <- heatmap + scale_fill_gradientn(colors = c("#440154FF", "#238A8DFF", "#FDE725FF")) 
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_cluster_markers_res0.4_filtered.png"), plot = heatmap, dpi = 300, width = 24, height = 30)
+```
+
+```{r}
+DimPlot(Tcell_subset, label = T, label.size = 3, reduction = "umap")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/images/umap_Tcells_res0.4_filtered.png", width = 10, height = 10, dpi = 600)
+
+```
+####Remake Dotplot to look at key genes across clusters
+
+```{r}
+DotPlot(Tcell_subset, features = c("CD4", "CD8A", "TRGC1", "TRDC", "ZBTB16", "TRAC", "TRBC1", "NKG7", 
+                                 "FCGR3A", "MYB", "CCR7", "IL7R",
+                                 "CD27", "LEF1", "SELL", "ITGB1", "TCF7", "TBX21", "IKZF2", "EOMES", "PRDM1", "ZEB2", "RUNX3", "BATF", "FOXP3", "GATA3", "RORC", 
+                                  "CD69", "KLRG1", "CD28", "MKI67", 
+                                 "ENTPD1", "PDCD1", "CCR5", "CXCR4", "PRF1", "GZMA", "GZMB", 
+                                 "GZMK", "GZMH", "AREG") %>% rev() , group.by = "seurat_clusters", 
+        dot.scale = 10, scale = T, col.min = -0.4, col.max = 0.4, scale.min = 0, scale.max = 75) + coord_flip() + RotatedAxis() + theme(plot.background = element_rect(fill="white"), )
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_Bubbleplot_filtered.png"), 
+       plot = last_plot(), dpi = 300, width = 12, height = 14)
+```
+
+```{r}
+DotPlot(Tcell_subset, features = c("GZMH", "GZMK", "GZMB", "GZMA", "PRF1", "CXCR4", "CCR5",
+"PDCD1", "ENTPD1", "MKI67", "CD28", "KLRG1", "CD69", "RORC", "GATA3",
+"FOXP3", "PRDM1", "EOMES", "IKZF2", "TBX21", "TCF7", "ITGB1", "SELL", "CD27", "IL7R", "CCR7", "FCGR3A", "NKG7", "ZBTB16", "CD8A", "CD4") %>% rev() ,  
+        dot.scale = 10, scale = T, col.min = -0.4, col.max = 0.4, scale.min = 0, scale.max = 75, cols="Spectral") + RotatedAxis() + theme(plot.background = element_rect(fill="white"), )
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_Bubbleplot_filtered.pdf"), 
+       plot = last_plot(), dpi = 300, width = 16, height = 8)
+```
+
+#Annotate T cell clusters based on feature plots and cluster DEGs
+
+```{r}
+#Andrew helped me write this line to check the current identities of the object
+table(Idents(Tcell_subset))
+
+new.T.cluster.ids <- c("0" = "CD4 Naive",
+                     "1" = "CD4 Effector Memory", 
+                       "2" = "CD4 Central Memory", 
+                       "3" = "CD8 GzmK+ Effector Memory", 
+                       "4" = "CD8 GzmB+ Effector Memory", 
+                       "5" = "CD8 TEMRA",
+                       "6" = "MAIT cells", 
+                       "7" = "CD4 Treg", 
+                       "8" = "gd T cells", 
+                       "9" = "CD8 Central Memory", 
+                       "10" =  "CD8 Naive", 
+                       "11" = "CD4 Central Memory-ISGs")
+                       
+
+names(new.T.cluster.ids) <- levels(Tcell_subset)
+Tcell_subset <- RenameIdents(Tcell_subset, new.T.cluster.ids)
+
+#Check the new identities of the object to make sure they've changed
+table(Idents(Tcell_subset))
+levels(Idents(Tcell_subset))
+DimPlot(Tcell_subset, reduction = "umap", label = FALSE, pt.size = 1.0)
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Tcells_umap_labeled.pdf"), plot = last_plot(), dpi = 300, width = 8, height = 5)
+```
+
+
+###Subset gd T cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+gd_subset <- subset(Tcell_subset, idents = c("8"))
+
+gd_subset[["RNA"]] <- as(gd_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+gd.genes <- rownames(gd_subset@assays$RNA@counts)
+gd.genes.filtered.mt <- grep(pattern = "^MT-", gd.genes, value = TRUE, invert = TRUE)
+gd.genes.filtered <- as.vector(grep(pattern = "^RP", gd.genes.filtered.mt, value = TRUE, invert = TRUE))
+length(gd.genes)
+# [1] 18133
+length(gd.genes.filtered)
+# [1] 18079
+
+
+```
+
+###DE genes between F and L phases among gd T cells
+
+```{r}
+Idents(gd_subset) <-"Phase" 
+markers.all.gd_subset <- FindMarkers(object = gd_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = gd.genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.gd_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/gdTcells_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.gd_subset) <- markers.all.gd_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.gd_subset$avg_log2FC > 0.4 & markers.all.gd_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.gd_subset$avg_log2FC < -0.4 & markers.all.gd_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+gd.volcano <- EnhancedVolcano(markers.all.gd_subset,
+                               lab = rownames(markers.all.gd_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "gd T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+gd.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/gdTcells_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(gd_subset, features = c("FKBP5", "PDE4D"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/gdTcell_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset MAIT cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+mait_subset <- subset(Tcell_subset, idents = c("MAIT cells"))
+
+mait_subset[["RNA"]] <- as(mait_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(mait_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+###DE genes between F and L phases among MAIT cells
+```{r}
+Idents(mait_subset) <-"Phase" 
+markers.all.mait_subset <- FindMarkers(object = mait_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.mait_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/MAITcells_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.mait_subset) <- markers.all.mait_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.mait_subset$avg_log2FC > 0.4 & markers.all.mait_subset$p_val_adj < 1e-5, 'dodgerblue3',
+      ifelse(markers.all.mait_subset$avg_log2FC < -0.4 & markers.all.mait_subset$p_val_adj < 1e-5, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+mait.volcano <- EnhancedVolcano(markers.all.mait_subset,
+                               lab = rownames(markers.all.mait_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-5,
+                               FCcutoff = 0.4,
+                               pointSize = 3,
+                               drawConnectors = TRUE,
+                               title = "MAIT cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, adj P value cutoff = 1e-5")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F,
+                                xlim = c(min(markers.all.mait_subset[['avg_log2FC']], na.rm = TRUE) - .5, max(markers.all.mait_subset[['avg_log2FC']], na.rm = TRUE) +
+    .5))
+mait.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/MAITcells_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 10, height = 8)
+
+VlnPlot(gd_subset, features = c("LYZ", "S100A8", "JUN"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/MAITcell_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+###Subset Treg cells 
+```{r}
+# Create a new Seurat object with selected clusters of Treg cells
+treg_subset <- subset(Tcell_subset, idents = c("CD4 Treg"))
+
+treg_subset[["RNA"]] <- as(treg_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(treg_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+###DE genes between F and L phases among Treg cells
+```{r}
+Idents(treg_subset) <-"Phase" 
+markers.all.treg_subset <- FindMarkers(object = treg_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.treg_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/Treg_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.treg_subset) <- markers.all.treg_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.treg_subset$avg_log2FC > 0.4 & markers.all.treg_subset$p_val_adj < 1e-5, 'dodgerblue3',
+      ifelse(markers.all.treg_subset$avg_log2FC < -0.4 & markers.all.treg_subset$p_val_adj < 1e-5, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.treg_subset,
+                               lab = rownames(markers.all.treg_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 5,
+                               pCutoff = 1e-5,
+                               FCcutoff = 0.4,
+                               pointSize = 3,
+                               drawConnectors = TRUE,
+                               title = "Treg F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, adj P value cutoff = 1e-5")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F,
+                               xlim = c(min(markers.all.treg_subset[['avg_log2FC']], na.rm = TRUE) - .5, max(markers.all.treg_subset[['avg_log2FC']], na.rm = TRUE) +
+    .5))
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/Treg_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 10, height = 8)
+
+VlnPlot(treg_subset, features = c("SLC25A20", "JUN"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/treg_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset GzmK+ CD8 T cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd8K_subset <- subset(Tcell_subset, idents = c("CD8 GzmK+ Effector Memory"))
+
+cd8K_subset[["RNA"]] <- as(cd8K_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd8K_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+
+###DE genes between F and L phases among CD8 GzmK+ cells
+```{r}
+Idents(cd8K_subset) <-"Phase" 
+markers.all.cd8K_subset <- FindMarkers(object = cd8K_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd8K_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8GzmK_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd8K_subset) <- markers.all.cd8K_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd8K_subset$avg_log2FC > 0.4 & markers.all.cd8K_subset$p_val_adj < 1e-5, 'dodgerblue3',
+      ifelse(markers.all.cd8K_subset$avg_log2FC < -0.4 & markers.all.cd8K_subset$p_val_adj < 1e-5, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd8K_subset,
+                               lab = rownames(markers.all.cd8K_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 5,
+                               pCutoff = 1e-5,
+                               FCcutoff = 0.4,
+                               pointSize = 3,
+                               drawConnectors = TRUE,
+                               title = "Effector Memory CD8 T cells GzmK+ F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, adj P value cutoff = 1e-5")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+                               max.overlaps = 20,
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F,
+                               xlim = c(min(markers.all.cd8K_subset[['avg_log2FC']], na.rm = TRUE) - .5, max(markers.all.cd8K_subset[['avg_log2FC']], na.rm = TRUE) +
+    .5))
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8GzmK_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 10, height = 8)
+
+VlnPlot(cd8K_subset, features = c("IFNG", "EZH2", "RHOB", "EZH2", "FKBP5", "MYO15B","ARHGAP10" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8GzmK_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset GzmB+ CD8 T cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd8B_subset <- subset(Tcell_subset, idents = c("4"))
+
+cd8B_subset[["RNA"]] <- as(cd8B_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd8B_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+
+###DE genes between F and L phases among CD8 GzmB+ cells
+```{r}
+Idents(cd8B_subset) <-"Phase" 
+markers.all.cd8B_subset <- FindMarkers(object = cd8B_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd8B_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8GzmB_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd8B_subset) <- markers.all.cd8B_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd8B_subset$avg_log2FC > 0.4 & markers.all.cd8B_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd8B_subset$avg_log2FC < -0.4 & markers.all.cd8B_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd8B_subset,
+                               lab = rownames(markers.all.cd8B_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "GzmB+ CD8 T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8GzmB_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd8B_subset, features = c("LYZ", "S100A8", "FKBP5" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8GzmB_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+###Subset CD8 TEMRA cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd8nkt_subset <- subset(Tcell_subset, idents = c("5"))
+
+cd8nkt_subset[["RNA"]] <- as(cd8nkt_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd8nkt_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+###DE genes between F and L phases among CD8 TEMRA cells
+```{r}
+Idents(cd8nkt_subset) <-"Phase" 
+markers.all.cd8nkt_subset <- FindMarkers(object = cd8nkt_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd8nkt_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8NKT_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd8nkt_subset) <- markers.all.cd8nkt_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd8nkt_subset$avg_log2FC > 0.4 & markers.all.cd8nkt_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd8nkt_subset$avg_log2FC < -0.4 & markers.all.cd8nkt_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd8nkt_subset,
+                               lab = rownames(markers.all.cd8nkt_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "CD8 TEMRA cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8NKT_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd8nkt_subset, features = c("FOS", "FKBP5" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8NKT_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset CD8 TCM cells 
+
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd8cm_subset <- subset(Tcell_subset, idents = c("9"))
+
+cd8cm_subset[["RNA"]] <- as(cd8cm_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd8cm_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+
+###DE genes between F and L phases among CD8 TCM cells
+```{r}
+Idents(cd8cm_subset) <-"Phase" 
+markers.all.cd8cm_subset <- FindMarkers(object = cd8cm_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd8cm_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8CM_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd8cm_subset) <- markers.all.cd8cm_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd8cm_subset$avg_log2FC > 0.4 & markers.all.cd8cm_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd8cm_subset$avg_log2FC < -0.4 & markers.all.cd8cm_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.cd8cm_subset,
+                               lab = rownames(markers.all.cd8cm_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "CD8 TCM cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8CM_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd8cm_subset, features = c("PMAIP1"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8CM_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset CD8 TN cells 
+
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd8n_subset <- subset(Tcell_subset, idents = c("10"))
+
+cd8n_subset[["RNA"]] <- as(cd8n_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd8n_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+
+###DE genes between F and L phases among CD8 TCM cells
+```{r}
+Idents(cd8n_subset) <-"Phase" 
+markers.all.cd8n_subset <- FindMarkers(object = cd8n_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd8n_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8N_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd8n_subset) <- markers.all.cd8n_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd8n_subset$avg_log2FC > 0.4 & markers.all.cd8n_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd8n_subset$avg_log2FC < -0.4 & markers.all.cd8n_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.cd8n_subset,
+                               lab = rownames(markers.all.cd8n_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "CD8 TN cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8N_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd8n_subset, features = c("S100A8"),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD8N_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset CD4 Naive cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd4naive_subset <- subset(Tcell_subset, idents = c("0"))
+
+cd4naive_subset[["RNA"]] <- as(cd4naive_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd4naive_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+
+###DE genes between F and L phases among CD4 Naive cells
+```{r}
+Idents(cd4naive_subset) <-"Phase" 
+markers.all.cd4naive_subset <- FindMarkers(object = cd4naive_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd4naive_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4naive_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd4naive_subset) <- markers.all.cd4naive_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd4naive_subset$avg_log2FC > 0.4 & markers.all.cd4naive_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd4naive_subset$avg_log2FC < -0.4 & markers.all.cd4naive_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd4naive_subset,
+                               lab = rownames(markers.all.cd4naive_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "Naive CD4 T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4naive_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd4naive_subset, features = c("JUN", "S100A8" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4naive_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+###Subset CD4 Effector Memory cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd4eff_subset <- subset(Tcell_subset, idents = c("CD4 Effector Memory"))
+
+cd4eff_subset[["RNA"]] <- as(cd4eff_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd4eff_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+
+```
+###DE genes between F and L phases among CD4 effector cells
+```{r}
+Idents(cd4eff_subset) <-"Phase" 
+markers.all.cd4eff_subset <- FindMarkers(object = cd4eff_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd4eff_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4eff_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd4eff_subset) <- markers.all.cd4eff_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd4eff_subset$avg_log2FC > 0.4 & markers.all.cd4eff_subset$p_val_adj < 1e-5, 'dodgerblue3',
+      ifelse(markers.all.cd4eff_subset$avg_log2FC < -0.4 & markers.all.cd4eff_subset$p_val_adj < 1e-5, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd4eff_subset,
+                               lab = rownames(markers.all.cd4eff_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                              labSize = 5,
+                               pCutoff = 1e-5,
+                               FCcutoff = 0.4,
+                               pointSize = 3,
+                               drawConnectors = TRUE,
+                               title = "Effector Memory CD4 T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, adj P value cutoff = 1e-5")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F,
+                               xlim = c(min(markers.all.cd4eff_subset[['avg_log2FC']], na.rm = TRUE) - .5, max(markers.all.cd4eff_subset[['avg_log2FC']], na.rm = TRUE) +
+    .5))
+treg.volcano
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4eff_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 10, height = 8)
+
+VlnPlot(cd4eff_subset, features = c("JUN", "S100A8" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4eff_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset CD4 Central Memory cells 
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd4cm_subset <- subset(Tcell_subset, idents = c("2"))
+
+cd4cm_subset[["RNA"]] <- as(cd4cm_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd4cm_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+```
+
+###DE genes between F and L phases among CD4 central memory cells
+
+```{r}
+Idents(cd4cm_subset) <-"Phase" 
+markers.all.cd4cm_subset <- FindMarkers(object = cd4cm_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd4cm_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4cm_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd4cm_subset) <- markers.all.cd4cm_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd4cm_subset$avg_log2FC > 0.4 & markers.all.cd4cm_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd4cm_subset$avg_log2FC < -0.4 & markers.all.cd4cm_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd4cm_subset,
+                               lab = rownames(markers.all.cd4cm_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "Central Memory CD4 T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4cm_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd4cm_subset, features = c("JUN", "S100A8" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4cm_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+###Subset CD4 IFNS Central Memory cells 
+
+```{r}
+# Create a new Seurat object with selected clusters of gd T cells
+cd4ifn_subset <- subset(Tcell_subset, idents = c("11"))
+
+cd4ifn_subset[["RNA"]] <- as(cd4ifn_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(cd4ifn_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+```
+
+###DE genes between F and L phases among CD4 IFN stimulated central memory cells
+
+```{r}
+Idents(cd4ifn_subset) <-"Phase" 
+markers.all.cd4ifn_subset <- FindMarkers(object = cd4ifn_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.cd4ifn_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4ifn_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.cd4ifn_subset) <- markers.all.cd4ifn_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.cd4ifn_subset$avg_log2FC > 0.4 & markers.all.cd4ifn_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.cd4ifn_subset$avg_log2FC < -0.4 & markers.all.cd4ifn_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+treg.volcano <- EnhancedVolcano(markers.all.cd4ifn_subset,
+                               lab = rownames(markers.all.cd4ifn_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "Central Memory IFN CD4 T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+treg.volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4ifn_FvL_volcano_colored.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(cd4ifn_subset, features = c("JUN", "S100A8" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/DEG.T/CD4ifn_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+#PGR signature analysis
+###Feature plots of non-classical progesterone receptors
+
+```{r}
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("FKBP5"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_FKBP5.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("FKBP4"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_FKBP5.png", dpi = 300, width = 12, height = 10)
+
+#Classical PR receptors
+#FeaturePlot(Tcell_subset, reduction = "umap", features = c("NR3C3"))
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PGR"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PGR.png", dpi = 300, width = 12, height = 10)
+
+#Non-classical membrane-associated progesterone receptors
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PGRMC1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PGRMC1.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PGRMC2"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PGRMC2.png", dpi = 300, width = 12, height = 10)
+
+#non-classical membrane progesterone receptors
+#Upon P4 biding to its membrane receptors the signal transduction cascades activate MAPKs, ERK1/2 and intracellular Ca2+ influx. These structurally resemble G protein-coupled receptors
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PAQR5"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PAQR5.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PAQR6"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PAQR6.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PAQR7"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PAQR7.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PAQR8"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PAQR8.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("PAQR9"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PAQR9.png", dpi = 300, width = 12, height = 10)
+
+FeaturePlot(Tcell_subset, reduction = "umap", features = c("ESR1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_ESR1.png", dpi = 300, width = 12, height = 10)
+#FeaturePlot(Tcell_subset, reduction = "umap", features = c("ESR2"))
+#ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_ESR2.png", dpi = 300, width = 12, height = 10)
+```
+###Ridge plots of PRs
+```{r}
+RidgePlot(Tcell_subset, features = c("FKBP5"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/FKBP5_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+RidgePlot(Tcell_subset, features = c("JUN"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/JUN_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("PGRMC1"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PGRMC1_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("PGRMC2"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PGRMC2_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("PAQR5"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR5_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("PAQR6"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR6_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("PAQR7"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR7_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("PAQR8"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR8_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+RidgePlot(Tcell_subset, features = c("ESR1"), group.by = "seurat_clusters")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/ESR1_by_cluster.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+
+```
+### Report number of cells with each mPGR
+```{r}
+sum(FetchData(Tcell_subset, vars = "ESR1") > 0)
+# 3805
+sum(FetchData(Tcell_subset, vars = "PGR") > 0)
+# 0
+sum(FetchData(Tcell_subset, vars = "PAQR5") > 0)
+# 10
+sum(FetchData(Tcell_subset, vars = "PAQR6") > 0)
+# 2690
+sum(FetchData(Tcell_subset, vars = "PAQR7") > 0)
+# 5349
+sum(FetchData(Tcell_subset, vars = "PAQR8") > 0)
+# 70384
+sum(FetchData(Tcell_subset, vars = "PGRMC1") > 0)
+# 47888
+sum(FetchData(Tcell_subset, vars = "PGRMC2") > 0)
+# 141229
+
+```
+###mPGR co-expression
+```{r}
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC1', feature2 = 'PGRMC2')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PGRMC1_by_PGMCR2.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PAQR6', feature2 = 'PAQR7')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR6_by_PAQR7.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PAQR6', feature2 = 'PAQR8')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR6_by_PAQR8.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PAQR7', feature2 = 'PAQR8')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR7_by_PAQR8.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC1', feature2 = 'PAQR6')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR6_by_PGRMC1.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC1', feature2 = 'PAQR7')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR7_by_PGRMC1.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC1', feature2 = 'PAQR8')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR8_by_PGRMC1.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC2', feature2 = 'PAQR6')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR6_by_PGRMC2.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC2', feature2 = 'PAQR7')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR7_by_PGRMC2.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+FeatureScatter(object = Tcell_subset, feature1 = 'PGRMC2', feature2 = 'PAQR8')
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PAQR8_by_PGRMC2.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+color.vector <- c(brewer.pal(8, "Set1"), brewer.pal(12, "Set3"), brewer.pal(8, "Dark2"), brewer.pal(8, "Accent"))
+heatmap <- DoHeatmap(subset(Tcell_subset, downsample = 1000), 
+                                   features = c("PAQR5", "PAQR6", "PAQR7", "PAQR8", "PGRMC1", "PGRMC2"), 
+                                   group.bar = T,
+                                   group.colors = color.vector,
+                                   draw.lines = F,
+                                   angle = 0,
+                                   disp.min = -1.5, disp.max = 1.5,
+                                   raster = F)
+
+heatmap <- heatmap + scale_fill_gradientn(colors = c("#440154FF", "#238A8DFF", "#FDE725FF")) 
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/Heatmap_Tcells_mPGRs.png"), plot = heatmap, dpi = 300, width = 25, height = 5)
+```
+
+###Dimensional reduction with mPGR genes as the dimensions
+
+```{r}
+mPGR.PCA <- RunPCA(Tcell_subset, pc.genes = c("PAQR5", "PAQR6", "PAQR7", "PAQR8", "PGRMC1", "PGRMC2"), npcs = 5, verbose = T)
+mPGR.PCA <- ScaleData(mPGR.PCA, features = c("PAQR5", "PAQR6", "PAQR7", "PAQR8", "PGRMC1", "PGRMC2"))
+
+#When I run the above code, it runs, but it calculates a pca using the variable features, not the list of genes I manually input to features. This is shown in the console which reports loading vectors in real time and the pca results are identical to the original Tcell_subset object. I think the problem is that I did not scale based on the curated list beforehand, so somehow the scaling is superceding the feature list and using varaible features. I will try running scaling first and then see if that fixes the issue
+
+mPGR.PCA <- RunPCA(Tcell_subset, pc.genes = c("PAQR5", "PAQR6", "PAQR7", "PAQR8", "PGRMC1", "PGRMC2"), npcs = 5, verbose = T)
+
+#Even after re-scaling, the console output still shows genes that were not input as parameters and the PCA plots between Tcell_subset and mPGR.PCA look the same
+
+ElbowPlot(mPGR.PCA, ndims = 50, reduction = "pca")
+ElbowPlot(Tcell_subset, ndims = 50)
+
+DimPlot(mPGR.PCA, label = T, label.size = 3, reduction = "pca")
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/umap_Tcells_mPGR.png", width = 10, height = 10, dpi = 600)
+DimPlot(Tcell_subset, label = T, label.size = 3, reduction = "pca")
+FeaturePlot(mPGR.PCA, reduction = "pca", features = c("PGRMC1"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PGRMC1.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(mPGR.PCA, reduction = "pca", features = c("PGRMC2"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_PGRMC2.png", dpi = 300, width = 12, height = 10)
+FeaturePlot(mPGR.PCA, reduction = "pca", features = c("CD8A"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/T_cells_CD8.png", dpi = 300, width = 12, height = 10)
+write_rds(mPGR.PCA, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/09-Tcell-object.rds")
+
+FeaturePlot(mPGR.PCA, reduction = "pca", features = c("CD4"))
+ggsave("/home/qpeters/scRNAseq/P4_PBMC_FLEX/annotation.Tcells/PGR_T_cells_CD4.png", dpi = 300, width = 12, height = 10)
+write_rds(mPGR.PCA, "/home/qpeters/scRNAseq/P4_PBMC_FLEX/FL031_PBMC-Flex-v2/09-Tcell-object.rds")
+
+mPGR.PCA <- FindNeighbors(mPGR.PCA, dims = 1:20, reduction = "pca")
+mPGR.PCA <- FindClusters(mPGR.PCA, resolution = 0.8)
+# 5 singletons identified. 18 final clusters.
+
+mPGR.PCA <- RunUMAP(mPGR.PCA, dims = 1:40, return.model = T)
+DimPlot(mPGR.PCA, label = T, label.size = 3, reduction = "umap")
+```
+
+#Subset ESR1+ cells 
+
+```{r}
+ESR_subset <- subset(x = Tcell_subset, subset = ESR1 > 0.5)
+DimPlot(ESR_subset, label = T, label.size = 3, reduction = "umap")
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.E2/umap.png"), plot = last_plot(), dpi = 300, width =6, height = 5)
+
+ESR_subset[["RNA"]] <- as(ESR_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(ESR_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(ESR_subset) <-"Phase" 
+markers.all.ESR_subset <- FindMarkers(object = ESR_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.ESR_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.E2/E2_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.ESR_subset) <- markers.all.ESR_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.ESR_subset$avg_log2FC > 0.4 & markers.all.ESR_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.ESR_subset$avg_log2FC < -0.4 & markers.all.ESR_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.ESR_subset,
+                               lab = rownames(markers.all.ESR_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "ESR1+ T cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.E2/E2_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+VlnPlot(ER_subset, features = c("JUN", "S100A8" ),
+        #idents = c(1,2),
+        group.by = "Phase", 
+        cols = c("firebrick", "dodgerblue3"), 
+        pt.size = 0,
+        y.max = NULL)
+
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.E2/E2_FvL_violin_colored.png"), plot = last_plot(), dpi = 300, width = 10, height = 10)
+```
+
+#Subset cells by mPGR expression
+
+###Subset PGRMC1+ cells
+
+```{r}
+#cd8effGzmK_subset <- subset(Tcell_subset, idents = "CD8 GzmK+ Effector Memory")
+
+PGRMC1_subset <- subset(x = cd8effGzmK_subset, subset = PGRMC1 > 0.5)
+
+PGRMC1_subset[["RNA"]] <- as(PGRMC1_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(PGRMC1_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(PGRMC1_subset) <-"Phase" 
+markers.all.PGRMC1_subset <- FindMarkers(object = PGRMC1_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.PGRMC1_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8TeffGzmK_PGRMC1_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.PGRMC1_subset) <- markers.all.PGRMC1_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.PGRMC1_subset$avg_log2FC > 0.4 & markers.all.PGRMC1_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.PGRMC1_subset$avg_log2FC < -0.4 & markers.all.PGRMC1_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.PGRMC1_subset,
+                               lab = rownames(markers.all.PGRMC1_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "PGRMC1+ CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8TeffGzmK_PGRMC1_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+```
+
+###Subset PGRMC2+ cells
+
+```{r}
+#cd8effGzmB_subset <- subset(Tcell_subset, idents = "CD8 GzmB+ Effector Memory")
+
+PGRMC2_subset <- subset(x = cd8effGzmK_subset, subset = PGRMC2 > 0.5)
+
+PGRMC2_subset[["RNA"]] <- as(PGRMC2_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(PGRMC2_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(PGRMC2_subset) <-"Phase" 
+markers.all.PGRMC2_subset <- FindMarkers(object = PGRMC2_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.PGRMC2_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_PGRMC2_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.PGRMC2_subset) <- markers.all.PGRMC2_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.PGRMC2_subset$avg_log2FC > 0.4 & markers.all.PGRMC2_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.PGRMC2_subset$avg_log2FC < -0.4 & markers.all.PGRMC2_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.PGRMC2_subset,
+                               lab = rownames(markers.all.PGRMC2_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "PGRMC2+ CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_PGRMC2_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+
+```
+
+###Subset all mPGR+ cells
+
+```{r}
+#cd8effGzmB_subset <- subset(Tcell_subset, idents = "CD8 GzmB+ Effector Memory")
+
+PGR_subset <- subset(x = cd8effGzmK_subset, subset = (PGRMC1 > 0.5 | PGRMC2 > 0.5 | PAQR5 > 0.5 | PAQR6 > 0.5 | PAQR7 > 0.5 | PAQR8 > 0.5 | PAQR9 > 0.5))
+
+PGR_subset[["RNA"]] <- as(PGR_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(PGR_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(PGR_subset) <-"Phase" 
+markers.all.PGR_subset <- FindMarkers(object = PGR_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.PGR_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_allPGR_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.PGR_subset) <- markers.all.PGR_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.PGR_subset$avg_log2FC > 0.4 & markers.all.PGR_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.PGR_subset$avg_log2FC < -0.4 & markers.all.PGR_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.PGR_subset,
+                               lab = rownames(markers.all.PGR_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "mPGR+ CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_mPGR_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+
+```
+
+
+###Subset mPGR- cells
+
+```{r}
+#cd8effGzmB_subset <- subset(Tcell_subset, idents = "CD8 GzmB+ Effector Memory")
+
+#noPGR_subset <- subset(x = cd8effGzmB_subset, subset = (PGRMC1 = 0 & PGRMC2 = 0 & PAQR5 = 0 & PAQR6 = 0 & PAQR7 = 0 & PAQR8 = 0 & PAQR9 = 0))
+
+noPGR_subset <- subset(x = cd8effGzmK_subset, subset = (PGRMC1 < 0.01 & PGRMC2 < 0.01 & PAQR5 < 0.01 & PAQR6 < 0.01 & PAQR7 < 0.01 & PAQR8 < 0.01 & PAQR9 < 0.01))
+
+noPGR_subset[["RNA"]] <- as(noPGR_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(noPGR_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(noPGR_subset) <-"Phase" 
+markers.all.noPGR_subset <- FindMarkers(object = noPGR_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.noPGR_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_noPGR_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.noPGR_subset) <- markers.all.noPGR_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.noPGR_subset$avg_log2FC > 0.4 & markers.all.noPGR_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.noPGR_subset$avg_log2FC < -0.4 & markers.all.noPGR_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.noPGR_subset,
+                               lab = rownames(markers.all.noPGR_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "mPGR- CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_NomPGR_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+```
+
+###Subset PAQR6+ cells
+
+```{r}
+#cd8effGzmB_subset <- subset(Tcell_subset, idents = "CD8 GzmB+ Effector Memory")
+
+PAQR6_subset <- subset(x = cd8effGzmK_subset, subset = PAQR6 > 0.5)
+
+PAQR6_subset[["RNA"]] <- as(PAQR6_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(PAQR6_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(PAQR6_subset) <-"Phase" 
+markers.all.PAQR6_subset <- FindMarkers(object = PAQR6_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.PAQR6_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_PAQR6_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.PAQR6_subset) <- markers.all.PAQR6_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.PAQR6_subset$avg_log2FC > 0.4 & markers.all.PAQR6_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.PAQR6_subset$avg_log2FC < -0.4 & markers.all.PAQR6_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.PAQR6_subset,
+                               lab = rownames(markers.all.PAQR6_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "PAQR6+ CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8TeffGzmK.PAQR6_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+
+```
+
+###Subset PAQR7+ cells
+
+```{r}
+#cd8effGzmB_subset <- subset(Tcell_subset, idents = "CD8 GzmB+ Effector Memory")
+
+PAQR7_subset <- subset(x = cd8effGzmK_subset, subset = PAQR7 > 0.5)
+
+PAQR7_subset[["RNA"]] <- as(PAQR7_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(PAQR7_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(PAQR7_subset) <-"Phase" 
+markers.all.PAQR7_subset <- FindMarkers(object = PAQR7_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.PAQR7_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_PAQR7_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.PAQR7_subset) <- markers.all.PAQR7_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.PAQR7_subset$avg_log2FC > 0.4 & markers.all.PAQR7_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.PAQR7_subset$avg_log2FC < -0.4 & markers.all.PAQR7_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.PAQR7_subset,
+                               lab = rownames(markers.all.PAQR7_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "PAQR7+ CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8TeffGzmK.PAQR7_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+```
+
+###Subset PAQR8+ cells
+
+```{r}
+#cd8effGzmB_subset <- subset(Tcell_subset, idents = "CD8 GzmB+ Effector Memory")
+
+PAQR8_subset <- subset(x = cd8effGzmK_subset, subset = PAQR8 > 0.5)
+
+PAQR8_subset[["RNA"]] <- as(PAQR8_subset[["RNA"]], "Assay")
+
+# Filter out mitochondrial genes for DEG analysis
+genes <- rownames(PAQR8_subset@assays$RNA@counts)
+genes.filtered.mt <- grep(pattern = "^MT-", genes, value = TRUE, invert = TRUE)
+genes.filtered <- as.vector(grep(pattern = "^RP", genes.filtered.mt, value = TRUE, invert = TRUE))
+length(genes)
+# [1] 18133
+length(genes.filtered)
+# [1] 18079
+
+Idents(PAQR8_subset) <-"Phase" 
+markers.all.PAQR8_subset <- FindMarkers(object = PAQR8_subset, 
+                                                  ident.1 = "F", ident.2 = "L", 
+                                                  min.pct = 0.1, 
+                                                  features = genes.filtered,
+                                                  test.use = "MAST", 
+                                                  verbose = T,
+                                                  latent.vars = "nCount_RNA") %>% rownames_to_column("gene")
+
+write.xlsx(markers.all.PAQR8_subset, file = file.path( "/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8_TeffGzmK_PAQR8_FvL_top_deg_MAST.xlsx"))
+
+library(EnhancedVolcano)
+rownames(markers.all.PAQR8_subset) <- markers.all.PAQR8_subset$gene
+
+ keyvals <- ifelse(
+    markers.all.PAQR8_subset$avg_log2FC > 0.4 & markers.all.PAQR8_subset$p_val_adj < 1e-2, 'dodgerblue3',
+      ifelse(markers.all.PAQR8_subset$avg_log2FC < -0.4 & markers.all.PAQR8_subset$p_val_adj < 1e-2, 'firebrick',
+        'grey30'))
+  keyvals[is.na(keyvals)] <- 'grey30'
+  names(keyvals)[keyvals == 'dodgerblue3'] <- 'F'
+  names(keyvals)[keyvals == 'firebrick'] <- 'L'
+  names(keyvals)[keyvals == 'grey30'] <- 'NS'
+
+  
+volcano <- EnhancedVolcano(markers.all.PAQR8_subset,
+                               lab = rownames(markers.all.PAQR8_subset),
+                               x = 'avg_log2FC',
+                               y = 'p_val_adj',
+                               labSize = 4,
+                               pCutoff = 1e-2,
+                               FCcutoff = 0.4,
+                               pointSize = 2,
+                               drawConnectors = TRUE,
+                               title = "PAQR8+ CD8 Effector Memory GzmK+ cells F v L DEG",
+                               subtitle = bquote(italic("avg_log2FC cutoff = 0.4, P value cutoff = 1e-2")),
+                               colCustom = keyvals,
+                               boxedLabels = TRUE,
+
+                               colAlpha = 1,
+                               legendPosition = 'bottom',
+                               legendLabSize = 15,
+                               legendIconSize = 5.0,
+                               gridlines.major = T,
+                               gridlines.minor = F)
+volcano
+ggsave(filename = file.path("/home/qpeters/scRNAseq/P4_PBMC_FLEX/Tcells.mPGR/CD8TeffGzmK.PAQR8_FvL_top_deg_MAST.pdf"), 
+       plot = last_plot(), dpi = 300, width = 14, height = 12)
+```
+
+```{r}
+clusters  <- as.character((Tcell_subset$seurat_clusters)) # or seurat_obj$seurat_clusters
+samples   <- as.character(Tcell_subset$orig.ident)
+condition <- as.character(Tcell_subset$Phase)
+
+# Create a raw count table
+counts_matrix <- table(clusters, condition)
+
+# Run Chi-Square test
+chisq_test <- chisq.test(counts_matrix)
+print(chisq_test)
+
+#values > 2 or < -2 are significant
+chisq_test$residuals
+
+
+#clusters            F            L
+#     0   -0.16047617   0.15586691
+#      1    5.46617786  -5.30917633
+#      10  -1.98536961   1.92834511
+#      11   1.11588966  -1.08383868
+#      2    8.18463270  -7.94955072
+#      3  -15.32438014  14.88422775
+#      4   -2.94897893   2.86427729
+#      5   -0.09909148   0.09624534
+#      6    0.06821566  -0.06625634
+#      7    3.10878622  -3.01949454
+#      8    0.03409879  -0.03311939
+#      9   -0.06004799   0.05832327
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
