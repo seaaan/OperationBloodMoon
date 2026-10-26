@@ -1,0 +1,8 @@
+Bootstrap: docker
+From: satijalab/seurat:5.5.1
+ 
+%post
+mkdir /scr /mmfs1
+ln --symbolic /mmfs1/sw /sw
+ln --symbolic /mmfs1/data /data
+ln --symbolic /mmfs1/gscratch /gscratch

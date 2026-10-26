@@ -9,31 +9,44 @@ This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
 # 2026-10-26
 
-Kristen finch from Hyak HQ suggested this solution for getting the symbolic links to show up.
+Kristen Finch from Hyak HQ suggested this solution for getting the symbolic links to show up.
 
-Overall, you rebuild the same container, but you add some additional instructions so that it creates several symbolic links as part of building the container. You have to have an already-built container ("seurat_5.5.1.sif" in your folder)
+    Step 1: Go to the OnDemand website and upload "seurat_hyak_container.def" into
+    your /mmfs1/gscratch/iscrm/ personal folder
 
-First, repeat steps 1-3 from 2026-10-22
-
-Step 4: Create "rebuild.def" as a new file defining how to rebuild the container:
-
-    echo "Bootstrap: localimage
-        From: seurat_5.5.1.sif
+    This file creates some symbolic links which allow your personal ones to work
+    It is a text file as follows:
+    
+        Bootstrap: docker
+        From: satijalab/seurat:5.5.1
          
         %post
         mkdir /scr /mmfs1
         ln --symbolic /mmfs1/sw /sw
         ln --symbolic /mmfs1/data /data
-        ln --symbolic /mmfs1/gscratch /gscratch" > rebuild.def
+        ln --symbolic /mmfs1/gscratch /gscratch
 
-Step 5: Rebuild the container
-    module load apptainer
-    apptainer build fs_seurat_5.5.1.sif rebuild.def
+    Step 2: ssh into hyak
+    > ssh smhughes@klone.hyak.uw.edu
+    
+    Step 3: Request a compute node
+    > salloc --account=iscrm --partition=compute --time=2:00:00 --mem=20G
+    
+    Step 4: Change to directory where container should reside)
+    > cd /gscratch/iscrm/smhughes
+    
+    Step 5: Pull and install the container
+    
+    > module load apptainer
+    > apptainer build seurat_5.5.1.sif seurat_hyak_container.def
 
-Step 6: (exit)
+    Step 6: Exit
     Run "exit" several time to exit the container, then the compute node, then the ssh session
-
-Rebuilding the container this way worked, now the symbolic links in my home directory show up in the Files pane. 
+    
+    Step 7: Test new container
+    Go to ondemand and request a new session with the custom container
+    /mmfs1/gscratch/iscrm/smhughes/seurat_5.5.1.sif
+    (But substituting your own user name)
 
 # 2026-10-22
 
@@ -60,6 +73,8 @@ Containers
 * We had a lot of problems with getting rachel's Seurat container to work. Claire and I could both open it via OnDemand but our personal symbolic links/home drives would not show up so we couldn't navigate the file system. 
 
 * We decided to install the container for ourselves. We followed these instructions: 
+
+SEE NOTES ABOVE FROM 10/26 WITH IMPROVED INSTRUCTIONS
 
     Step 1: ssh into hyak
     > ssh smhughes@klone.hyak.uw.edu
