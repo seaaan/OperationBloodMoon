@@ -9,6 +9,46 @@ This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
 # 2026-10-26
 
+* confirm that everyone has the directories that they want in Hyak
+[X] Sean
+[X] Claire
+
+We installed a new container and it worked.
+
+* decide on/document if we want a shared folder for this project. Like in gscratch/iscrm we could have a P4 folder. I think this might work better than having it in one of our "personal" directories but I'm not 100% opposed to that.
+decide on/document an official location for raw data storage, look into Lolo for long-term? https://hyak.uw.edu/docs/systems/lolo/overview/
+
+iscrm/P4
+
+* decide on/document a structure for the directory (where do .rds live, where do outputs like plot images live etc). We can do something cute in the terminal to get it to print out the structure that we can then annotate
+
+iscrm/OperationBloodMoon
+    Xenium
+        R
+        data
+            raw
+            rds
+        plots
+
+* figure out how to access the raw data from wherever we are running the scripts
+
+We'll try iscrm first
+
+* figure out if we need to run the scripts in scrubbed or not. If we do, maybe make some kind of backup schedule so our stuff doesn't get deleted
+
+We'll try iscrm first
+
+* consider moving our other OperationBloodMoon work to Hyak so it is all in the same place? It seems confusing to have the notes locally/github but do the work in hyak
+
+It was too hard to figure out the permissions on github so we just made a new folder 
+
+## Data analysis
+
+We got started with looking at Block A and then got kicked out of the room. 
+
+
+## Installing a container on Hyak
+
 Kristen Finch from Hyak HQ suggested this solution for getting the symbolic links to show up.
 
     Step 1: Go to the OnDemand website and upload "seurat_hyak_container.def" into
