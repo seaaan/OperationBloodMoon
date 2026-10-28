@@ -9,6 +9,19 @@ This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
 # 2026-10-28
 
+More hyak/git drama. When I started a new session in klone I couldn't pull:
+Permission denied (publickey).
+fatal: Could not read from remote repository.
+
+I had to authenticate again by running 
+
+eval "$(ssh-agent -s)"
+    ssh-add ~/.ssh/klone
+    
+Then I was authenticated again and I was able to git pull. 
+
+We opened the ssh config file using nano and replaced some text saying what key it should use. So now it knows which key to use for github each time. Now it seems that I don't need to authenticate each time I log in to Klone. (!)
+
 If you want to be cute and get an image of our directory structure, get yourself into the terminal in R (command prompt or powershell and run tree. If you want to see all the files too, not just the folders, you can run tree /F
 If you want to look at the structure in a subdirectory you can cd there or you can say tree Xenium /F (to see the files in OperationBloodMoon/Xenium
 
