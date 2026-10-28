@@ -1,0 +1,45 @@
+---
+title: "Xenium prelim analyses"
+output: html_document
+date: "2026-10-26"
+---
+```{r}
+
+
+library(Seurat)
+library(future)
+# plan("multisession", workers = 10)
+library(ggplot2)
+library(here)
+
+# options(future.globals.maxSize = 10 * 1024^3)
+```
+
+
+
+
+
+```{r}
+
+# here::here sets the wd to be Xenium/R so I need to go up a level to get to dat
+
+pathA <- here("../data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201")
+
+
+# Load the Xenium data
+xenium.obj <- LoadXenium(pathA, fov = "fov", segmentations = "cell")
+# remove cells with 0 counts
+xenium.obj <- subset(xenium.obj, subset = nCount_Xenium > 0)
+```
+
+
+```{r}
+
+
+# we detected around 50 genes and around 5 copies of each gene per cell 
+
+VlnPlot(xenium.obj, features = c("nFeature_Xenium", "nCount_Xenium"), ncol = 2, pt.size = 0)
+
+ImageDimPlot(xenium.obj, fov = "fov", molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+
+```
