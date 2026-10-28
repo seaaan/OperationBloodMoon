@@ -9,6 +9,10 @@ This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
 # 2026-10-28
 
+If you want to be cute and get an image of our directory structure, get yourself into the terminal in R (command prompt or powershell and run tree. If you want to see all the files too, not just the folders, you can run tree /F
+If you want to look at the structure in a subdirectory you can cd there or you can say tree Xenium /F (to see the files in OperationBloodMoon/Xenium
+
+
 There is no backup system on gscratch/iscrm. OperationBloodMoon can be changed by anyone with access to the iscrm folder. Therefore we should use a backup system for our code. So, I linked OperationBloodMoon in hyak to the github version. 
 
 To set up git on hyak, follow these instructions
