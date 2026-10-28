@@ -7,6 +7,25 @@ output: html_document
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
 
+# 2026-10-28
+
+There is no backup system on gscratch/iscrm. OperationBloodMoon can be changed by anyone with access to the iscrm folder. Therefore we should use a backup system for our code. So, I linked OperationBloodMoon in hyak to the github version. 
+
+To set up git on hyak, follow these instructions
+
+1. Start a klone hyak terminal (https://ondemand.hyak.uw.edu/pun/sys/shell/ssh/default)
+2. Enter: cat ~/.ssh/klone.pub
+3. Copy the whole thing, from "ssh-rsa" through "Klone cluster key"
+4. Go to github and add a new ssh key here: https://github.com/settings/keys
+5. Back in the klone hyak terminal, try: ssh -T git@github.com 
+6. You will see something like "Hi seaaan! You've successfully authenticated, but GitHub does not provide shell access."
+7. Run these two commands, with your name and your email that's associated with Github:
+    git config --global user.name "Sean Hughes"
+    git config --global user.email "you@example.com"
+8. cd into OperationBloodMoon and try "git pull". As long as you get "Already up to date" you should be good to go
+
+Annoyingly, while you can track changes and make commits from RStudio inside Hyak, push/pull doesn't work. To push/pull, you have to go into a klone-login window (https://ondemand.hyak.uw.edu/pun/sys/shell/ssh/default) and cd into OperationBloodMoon and then git push/git pull from there. 
+
 # 2026-10-26
 
 * confirm that everyone has the directories that they want in Hyak
