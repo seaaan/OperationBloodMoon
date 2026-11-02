@@ -1,0 +1,437 @@
+---
+title: "Cytobrush Rhapsody"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(Seurat)
+library(tidyverse)
+library(AzimuthAPI) # need to install via github with devtools or remotes
+# needs to be set for large dataset analysis
+options(future.globals.maxSize = 5e9)
+
+cb_lane1 <- read_rds("data_cytobrushes/CB1_Seurat.rds")
+cb_lane1$Lane <- "Lane 1"
+cb_lane2 <- read_rds("data_cytobrushes/CB2_Seurat.rds")
+cb_lane2$Lane <- "Lane 2"
+
+cb <- merge(cb_lane1, cb_lane2)
+
+```
+
+```{r}
+# THIS CHUNK ADDS METADATA (PTID AND PHASE) TO THE SAMPLES
+
+# To add metadata with AddMetaData, you need a dataframe with rownames that match 
+# the rownames from the SeuratObject 
+# Steps:
+# 1. Get current metadata out of object
+metadata <- cb@meta.data %>% 
+    mutate(Rownames = rownames(.))
+
+# 2. Select columns you want to add 
+to_add <- metadata %>% 
+    separate(Sample_Name, into = c("Ptid", "Sample", "Phase"), sep = "_") |> 
+    select(Rownames, Sample, Ptid, Phase) %>% 
+    as.data.frame()
+
+# NAs come from cells that were identified as multiplets (multiple sample tags) 
+# or undetermined (too few sample tags)
+
+# 3. Add back rownames which tidyverse removes
+rownames(to_add) <- to_add$Rownames
+to_add <- select(to_add, -Rownames)
+
+# 5. Add the new metadata to the Seurat Object
+cb <- AddMetaData(cb, to_add)
+```
+
+```{r}
+# THIS CHUNK CHECKS THE QC METRICS AND FILTERS OUT LOW QUALITY CELLS
+
+# check QC metrics
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+cb[["percent.mt"]] <- PercentageFeatureSet(cb, pattern = "^MT-")
+
+# Visualize QC metrics as a violin plot
+# have some cells with  really high transcript counts, most cells have info about ~2k genes, a few cells have a higher percentage of mt transcripts
+
+VlnPlot(cb, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+VlnPlot(cb, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0, group.by = "Phase")
+
+VlnPlot(cb, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 1, group.by = "Ptid")
+
+#dropoff at about 75k
+cb$nCount_RNA  %>%  
+    hist(breaks= 100)
+
+#lowest counts are around 170K
+sort(cb$nCount_RNA) %>% tail(n = 20)
+#highest are around 4K
+sort(cb$nCount_RNA) %>% head(n = 20)
+
+cb$nFeature_RNA  %>%  
+    hist(breaks= 100)
+
+#highest is around 11K
+sort(cb$nFeature_RNA) %>% tail(n = 20)
+#lowest are around 300
+sort(cb$nFeature_RNA) %>% head(n = 20)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+p1 <- FeatureScatter(cb, feature1 = "nCount_RNA", feature2 = "percent.mt") +
+    geom_hline(yintercept = 15) + 
+    geom_vline(xintercept = 7.5E4)
+
+p2 <- FeatureScatter(cb, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+    geom_hline(yintercept = 1000) + 
+    geom_hline(yintercept = 9000) + 
+    geom_vline(xintercept = 7.5E4)
+
+p1 + p2
+ggsave("images/cb/prefilter_quality_metrics.png", width = 8, height = 4, dpi = 300)
+
+#subset for nCount, nFeature and percent.mt. Tutorial does not have an nCount subset but we are adding one because we don't want info from the cells that only have a few transcripts read
+#our cutoffs are based on the histograms made above
+
+cb_subset <- subset(cb, 
+    subset = nFeature_RNA > 1000 & percent.mt < 15)
+
+FeatureScatter(cb_subset, feature1 = "nCount_RNA", feature2 = "percent.mt") + 
+    FeatureScatter(cb_subset, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+ggsave("images/cb/postfilter_quality_metrics.png", width = 8, height = 4, dpi = 300)
+
+#check violins again after subsetting
+VlnPlot(cb_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+#comparing our original and subset objects, we've removed about 3k cells, not much!! Lol
+cb_subset
+cb
+```
+
+## Cell numbers
+
+```{r}
+input <- readxl::read_excel("J:/Projects/Progesterone_R01/Experiments/scRNAseq/Tissue/Rhapsody runs/2026-08-26_cytobrush/01-sample prep/Endocervical Cytobrush real.xlsx", sheet = "Count and viability", range = "A1:N17")
+
+# input cell numbers are based on the input to the CD45 enrichment
+input_pcts <- input |> 
+    mutate(Input = case_when(
+        SpecimenCode == "H_E_L" ~ 0.75E6,
+        is.na(`total in 275ul`) ~ `(no recount)`,
+        is.na(`(no recount)`) ~ `total in 275ul`
+    )) |> 
+    mutate(Lane = ifelse(`Pool/Lane` == "A", "Lane 1", "Lane 2")) |> 
+    group_by(Lane) |> 
+    mutate(InputPct = Input/sum(Input) * 100) |> 
+    ungroup() |> 
+    select(Lane, Sample_Name = `SpecimenCode`, InputPct)
+
+cb_processed@meta.data |> 
+    group_by(Lane) |> 
+    summarise(Recovered = n()) |>  
+    ungroup() |> 
+    mutate(LoadedTotal = ifelse(Lane == "Lane 1", 36800, 58880)) |>
+    mutate(LoadedViable = ifelse(Lane == "Lane 1", 10930, 19018)) |>
+    pivot_longer(-Lane, names_to = "Category", values_to = "Number") |> 
+    ggplot(aes(x = Lane, y = Number, fill = Category)) +
+    geom_col(position = "dodge") + 
+    ylab("Number of cells")
+ggsave("images/cb/cell_input_vs_recovery.png", width = 4, height = 4, dpi = 300)
+
+cb_processed@meta.data |> 
+    group_by(Ptid, Lane) |> 
+    count() |> 
+    ungroup() |> 
+    ggplot(aes(x = Lane, y = n, fill = Ptid)) +
+    geom_col() + 
+    ylab("Number of cells")
+ggsave("images/cb/cell_recovery_by_donor.png", width = 4, height = 4, dpi = 300)
+
+cb_processed@meta.data |> 
+    group_by(Phase, Lane) |> 
+    count() |> 
+    ungroup() |> 
+    ggplot(aes(x = Lane, y = n, fill = Phase)) +
+    geom_col() + 
+    ylab("Number of cells")
+ggsave("images/cb/cell_recovery_by_phase.png", width = 4, height = 4, dpi = 300)
+
+cb_processed@meta.data |> 
+    filter(!Ptid %in% c("Multiplet", "Undetermined")) |>
+    group_by(Sample_Name, Lane) |> 
+    count() |> 
+    ungroup() |> 
+    mutate(Percent = n/sum(n) * 100) |> 
+    mutate(Percent = round(Percent, 1)) |> 
+    right_join(input_pcts) |> 
+    mutate(Percent = ifelse(is.na(Percent), 0, Percent)) |> 
+    ggplot(aes(x = Percent, y = InputPct)) + 
+    geom_point() + facet_wrap(~Lane) + 
+    coord_equal() + 
+    ylab("Expected percent of cells") + 
+    xlab("Observed percent of cells") + 
+    ggrepel::geom_label_repel(aes(label = Sample_Name), nudge_x = 10)
+
+cb_processed@meta.data |> 
+    filter(!Ptid %in% c("Multiplet", "Undetermined")) |> 
+    group_by(Ptid, Phase) |> 
+    count() |> 
+    ggplot(aes(x = Phase, y = n, color = Ptid)) + 
+    geom_line(aes(group = Ptid)) + 
+    geom_point() + 
+    scale_y_log10() + 
+    ylab("Number of cells (log10)")
+ggsave("images/cb/cell_number_by_ptid.png", width = 4, height = 4, dpi = 300)
+```
+
+```{r}
+# THIS CHUNK DOES PRE-PROCESSING
+cb_processed <- cb_subset |> 
+    subset(subset = !Ptid %in% c("Multiplet", "Undetermined")) |> 
+    NormalizeData() |> 
+    FindVariableFeatures() |> 
+    ScaleData() |> 
+    RunPCA() |> 
+    FindNeighbors(dims = 1:30, reduction = "pca") |> 
+    FindClusters() |> 
+    RunUMAP(dims = 1:30, reduction = "pca") |> 
+    AzimuthAPI::CloudAzimuth(assay = "RNA")
+```
+
+```{r}
+# THIS CHUNK PLOTS UMAPS COLORED BY VARIOUS CO-VARIATES
+
+DimPlot(cb_processed, label = T, label.size = 3, reduction = "umap", group.by = "Phase")
+
+DimPlot(cb_processed, label = T, label.size = 3, reduction = "umap", group.by = "Ptid")
+
+DimPlot(cb_processed, label = T, label.size = 3, reduction = "umap", group.by = "Lane")
+
+```
+
+## Cluster annotation
+
+```{r}
+# THIS CHUNK USES AZIMUTH CELL ANNOTATION
+
+#how many occurrences of each label are there
+cb_processed@meta.data %>% count(azimuth_medium) %>% arrange(desc(n))
+
+DimPlot(cb_processed, group.by = "seurat_clusters", label.size = 4, label = T, reduction = "umap",
+    repel = TRUE)
+
+DimPlot(cb_processed, group.by = "azimuth_broad", label.size = 4, label = T, reduction = "umap",
+    repel = TRUE) 
+
+DimPlot(cb_processed, group.by = "azimuth_medium", label.size = 4, label = T, reduction = "umap",
+    repel = TRUE) 
+
+DimPlot(cb_processed, group.by = "azimuth_label", label.size = 4, label = T, reduction = "umap",
+    repel = TRUE) + NoLegend() 
+
+cb_processed@meta.data %>% ggplot(aes(x = azimuth_medium, fill = factor(seurat_clusters))) + geom_bar() + coord_flip()
+
+cb_processed@meta.data %>% ggplot(aes(x = seurat_clusters, fill = factor(azimuth_medium))) + geom_bar() + coord_flip()
+
+```
+
+```{r}
+# THIS CHUNK IDENTIFIES THE MARKERS ASSOCIATED WITH EACH CLUSTER
+
+Idents(cb_processed) <- "seurat_clusters"
+all_markers <- FindAllMarkers(cb_processed, only.pos = TRUE)
+
+# 12 = B cells = CD19
+# 15 = cycling = MKI67
+# 14 = epithelial cells = KRT80
+# 3, 7, 11, 13 = T cells = "CD3D", "CD4", "CD8A"
+# 2, 4, 5, 9 = monocytes IL1B, MMP9
+# 0, 1, 6, 8, 10 = macrophage markers = SIGLEC1
+
+monocyte_markers <- FindMarkers(cb_processed, ident.1 = c(2, 4, 5, 9))
+
+macrophage_markers <- FindMarkers(cb_processed, ident.1 = c(0, 1, 6, 8, 10))
+
+DotPlot(cb_processed, features = c("CD3D", "CD4", "CD8A", "CD14", "CD68", 
+    "IL1B", "MMP9",  "SIGLEC1", "KRT80", "MKI67", "CD19"))
+
+# are any clusters obviously junk? 
+FeaturePlot(cb_processed, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"))
+
+```
+
+## Add our own annotations based on azimuth and our brains
+
+```{r}
+# THIS CHUNK MAPS EACH CELL CLUSTER TO AN ANNOTATION BASED ON AZIMUTH AND OUR
+# OBSERVATIONS
+
+# describe each cluster with the most likely azimuth name
+cell_annotations <- cb_processed@meta.data |> 
+    rownames_to_column() |> 
+    # simplify T cell labels to CD4 or CD8 (dropping memory labels)
+    mutate(our_annotation = case_when(
+        seurat_clusters == 12 ~ "B cell",
+        seurat_clusters == 15 ~ "Cycling cell",
+        seurat_clusters == 14 ~ "Epithelial cell",
+        seurat_clusters %in% c(3, 7, 11, 13) ~ "T cell",
+        seurat_clusters %in% c(0, 1, 6, 8, 10) ~ "Macrophage",
+        seurat_clusters %in% c(2, 4, 5, 9) ~ "Monocyte"
+    )) |> 
+    select(rowname, seurat_clusters, our_annotation)
+
+rownames(cell_annotations) <- cell_annotations$rowname
+cell_annotations <- select(cell_annotations, -rowname)
+
+# add our_annotations into the metadata for cb_processed 
+cb_processed <- AddMetaData(cb_processed, cell_annotations)
+
+# make the default Ident be "our_annotation"
+# otherwise it gives a bunch of problems
+Idents(cb_processed) <- "our_annotation"
+```
+
+## Plot cb_processed data vs cb_processed and new annotations
+
+```{r}
+# THIS CHUNK CREATES PLOTS COMPARING THE cb_processed WITH THE FULL DATA AND THE 
+# NEW ANNOTATIONS
+
+p1 <- DimPlot(cb_processed, label = T, label.size = 3, reduction = 'umap', group.by = 'seurat_clusters') + NoLegend()
+p2 <- DimPlot(cb_processed, label = T, label.size = 3, reduction = 'umap', group.by = 'our_annotation') + NoLegend()
+p1 + p2
+ggsave("images/cb/umap_annotated.png", width = 8, height = 4, dpi = 300)
+
+DotPlot(cb_processed, features = c("CD3D", "CD14", "CD68", 
+    "IL1B", "MMP9",  "SIGLEC1", "KRT80", "MKI67", "CD19"))
+ggsave("images/cb/dot_plot_annotated.png", width = 10, height = 4, dpi = 300)
+```
+
+## Cell numbers
+
+```{r}
+cb_processed@meta.data |> 
+    group_by(Phase, Lane, our_annotation) |> 
+    count() |> 
+    ggplot(aes(x = Phase, y = n, fill = our_annotation)) + 
+    geom_col() + facet_wrap(~Lane, ncol = 4)
+
+cb_processed@meta.data |> 
+    group_by(Phase, Ptid, our_annotation) |> 
+    count() |> 
+    ggplot(aes(x = Phase, y = n, fill = our_annotation)) + 
+    geom_col() + facet_wrap(~Ptid, ncol = 4) + 
+    ylab("Cell numbers (linear)")
+ggsave("images/cb/cell_types_by_ptid.png", width = 7, height = 5, dpi = 300)
+
+
+cb_processed@meta.data |> 
+    group_by(Ptid, Phase, our_annotation) |> 
+    count() |> 
+    ggplot(aes(x = Phase, y = n, color = Ptid)) + 
+    geom_line(aes(group = Ptid)) + 
+    geom_point() + 
+    scale_y_log10() + 
+    facet_wrap(~our_annotation) + 
+    ylab("Cell numbers (log10)")
+
+ggsave("images/cb/cell_numbers_by_ptid.png", width = 6, height = 5, dpi = 300)
+```
+
+
+## Differential expression
+
+| Function | sc or bulk | Test | Pairing | Latent var | File name |
+|----|----|----|----|----|----|
+| do_de_test | single-cell | MAST | paired | Ptid | de_genes |
+| do_de_test_mast_unpaired | single-cell | MAST | unpaired | None | mast_unpaired_de_genes |
+| do_de_test_mast_unpaired_latent_nCount | single-cell | MAST | unpaired | nCount_RNA | mast_unpaired_latent_nCount_de_genes |
+| do_de_test_pseudobulked | pseudobulk | DESeq2 | unpaired | None | pseudobulked_de_genes |
+
+```{r}
+# THIS CHUNK CALCULATES DE GENES BY CYCLE PHASE
+
+# function to test for differentially expressed genes by phase within specified
+# cell population, adjusting for ptid 
+do_de_test <- function(data, annotation) {
+    print(paste("running", annotation))
+    # subset the seurat object to cells of interest
+    subsetted <- subset(data, subset = our_annotation == annotation) 
+    
+    # specify comparison between phases
+    Idents(subsetted) <- "Phase"
+    
+    de_results <- FindMarkers(subsetted, 
+        ident.1 = "F",
+        ident.2 = "L",
+        test.use = "MAST", 
+        # accounts for pairing between samples
+        latent.var = "Ptid") |> 
+        # store gene names in a column
+        rownames_to_column("gene") |> 
+        # record cell population
+        mutate(our_annotation = annotation) 
+    
+    # save a file with the results 
+    #write_csv(de_results, paste0("results/", annotation, "_de_genes.csv"))
+    print(de_results[1:5, ] |> as_tibble())
+    
+    # return the results
+    de_results
+}
+
+# function to test for differentially expressed genes by phase within specified
+# cell population, adjusting for ptid 
+do_de_test_pseudobulked <- function(data, annotation) {
+    print(paste("running", annotation))
+    # subset the seurat object to cells of interest
+    subsetted <- subset(data, subset = our_annotation == annotation) |> 
+        AggregateExpression(return.seurat = TRUE, group.by = c("Ptid", "Phase"))
+    
+    # specify comparison between phases
+    Idents(subsetted) <- "Phase"
+    
+    de_results <- FindMarkers(subsetted, 
+        ident.1 = "F",
+        ident.2 = "L",
+        test.use = "DESeq2") |> 
+        # store gene names in a column
+        rownames_to_column("gene") |> 
+        # record cell population
+        mutate(our_annotation = annotation) 
+    
+    # save a file with the results 
+    #write_csv(de_results, paste0("results/", annotation, "_pseudobulked_de_genes.csv"))
+    
+    print(de_results[1:5, ] |> as_tibble())
+    
+    # return the results
+    de_results
+}
+
+# get names of each population in reverse order of population size
+# so it runs the smallest populations first
+populations <- cb_processed@meta.data |> group_by(our_annotation) |> count() |> 
+    arrange(n) |> pull(our_annotation)
+
+DefaultAssay(cb_processed) <- "RNA"
+# run DE tests for every cell population PSEUDOBULKED
+de_genes_by_phase_pseudobulked <- map(populations, function(popn) do_de_test_pseudobulked(cb_processed, popn)) |> 
+    bind_rows()
+
+# run DE tests for every cell population MAST LATENT VAR
+de_genes_by_phase <- map(populations, function(popn) do_de_test(cb_processed, popn)) |> 
+    bind_rows()
+
+
+VlnPlot(cb_processed |> subset(our_annotation == "Monocyte"), "DGKI", 
+    group.by = "Ptid", split.by = "Phase")
+
+```
