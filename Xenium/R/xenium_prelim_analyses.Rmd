@@ -8,11 +8,12 @@ date: "2026-10-26"
 
 library(Seurat)
 library(future)
-# plan("multisession", workers = 10)
+plan("multisession", workers = 4)
 library(ggplot2)
 library(here)
+library(sf)
 
-# options(future.globals.maxSize = 10 * 1024^3)
+options(future.globals.maxSize = 10 * 1024^3)
 ```
 
 
@@ -23,17 +24,37 @@ library(here)
 
 # here::here sets the wd to be Xenium/R so I need to go up a level to get to dat
 
-pathA <- here("../data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201")
+read_block <- function(path, block) {
+    # Load the Xenium data
+    xenium.obj <- LoadXenium(path, fov = block, segmentations = "cell")
+    
+    # remove cells with 0 counts
+    xenium.obj <- subset(xenium.obj, subset = nCount_Xenium > 0)
+    
+    xenium.obj
+}
 
-# Rachel's here() starts at /mmfs1/gscratch/iscrm/OperationBloodMoon
+block_a <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
 
-full_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
+block_b <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103582__JL4_B__20260731__175202/"
 
-# Load the Xenium data
-xenium.obj <- LoadXenium(full_path, fov = "fov", segmentations = "cell")
+block_a <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
 
-# remove cells with 0 counts
-xenium.obj <- subset(xenium.obj, subset = nCount_Xenium > 0)
+block_c <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks C and D/20260811__190356__SR26-0828_Lund_XeniumV3_2607/output-XETG00440__0103097__JL3_C__20260811__190405/"
+
+block_d <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks C and D/20260811__190356__SR26-0828_Lund_XeniumV3_2607/output-XETG00440__0103004__JL4_D__20260811__190405/"
+
+block_e <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks E and F/20260814__175243__SR26-0828_Lund_XeniumV4_2607/output-XETG00440__0103671__JL7_E__20260814__175253/"
+
+block_f <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks E and F/20260814__175243__SR26-0828_Lund_XeniumV4_2607/output-XETG00440__0103670__JL8_F__20260814__175253/"
+
+test_a <- read_block(block_a, "BlockA")
+
+test_b <- read_block(block_b, "BlockB")
+
+xenium.obj <- merge(test_a, test_b, 
+      add.cell.ids = c("BlockA", "BlockB"))
+
 ```
 
 
@@ -108,5 +129,30 @@ celltype.plot | niche.plot
 ggsave(here("Xenium", "plots", "our_first_niche_plot.png"))
 
 table(xenium.obj$seurat_clusters, xenium.obj$niches)
+```
+
+## Mapping coordinates
+
+```{r}
+# read in file exported from 10X explorer containing the names of the cells on interest
+cells <- read.csv("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/coords/AvagF_cells_stats.csv", skip = 2)
+
+# subset to just those cells
+block_a_vag_follicular <- subset(test_a, cells = cells$Cell.ID)
+# but when you plot it, it still shows the other cells...
+ImageDimPlot(block_a_vag_follicular, molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+
+# this shows that the 
+test_a$InOrOut <- as.numeric(ifelse(colnames(test_a) %in% cells$Cell.ID, 1, 2))
+ImageFeaturePlot(test_a, features = 'InOrOut', nmols = 1000)
+
+xenium.obj <- SCTransform(block_a_vag_follicular, assay = "Xenium")
+xenium.obj <- RunPCA(xenium.obj, npcs = 30, features = rownames(xenium.obj))
+xenium.obj <- RunUMAP(xenium.obj, dims = 1:30)
+xenium.obj <- FindNeighbors(xenium.obj, reduction = "pca", dims = 1:30)
+xenium.obj <- FindClusters(xenium.obj, resolution = 0.3)
+
+
+
 ```
 
