@@ -6,6 +6,22 @@ output: html_document
 ---
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
+#2026-11-09
+Main goal currently is to separate the the blocks by tissue/phase.
+SMH driving: making a function to read in all the blocks (called read_block)
+Need to create Seurat objects from the rest of the blocks first (we only did block A).
+Seurat v6 is out now! 
+Sean testing out merging block A and block B to see if it works the same way for spatial data as it did for single cell data.
+Merge seemed to be running endlessly - Sean ended it and we'll come back to it later.
+Move on to using the coordinates for each tissue piece (that we found via Xenium explorer) to create a different object
+We all uploaded our exported coordinates to OperationBloodMoon -> Xenium -> data -> coords
+Claire found a package called "sf" that will build polygons from the coordinate .csvs, then assign all cell centroids within that polygon to a user-specified label.
+"sf" was taking a long time to install
+Sean found another thing on the internet that said 
+Can get names of cells out of Xenium explorer (instead of coordinates) and export as .csv. Subsetting using this gave a Seurat object with fewer cells, but when he makes a plot it still shows the whole block...
+Seems like not subsetting the molecules is a common/known issue: https://github.com/satijalab/seurat/issues/9085
+Looks like the cell ID thing will work - for next time, export the cell IDs from Xenium explorer
+
 #2026-11-02
 Back to working thru the xenium vignette, working on block A.
 RLC driving: worked out how to get the filepaths to work without here()
