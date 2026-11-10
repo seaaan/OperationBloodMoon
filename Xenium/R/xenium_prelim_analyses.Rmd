@@ -14,7 +14,7 @@ library(here)
 #library(sf)
 library(tidyverse)
 
-options(future.globals.maxSize = 10 * 1024^3)
+options(future.globals.maxSize = 50 * 1024^3)
 ```
 
 ```{r}
@@ -75,7 +75,8 @@ block_e <- load_raw_block("E")
 block_f <- load_raw_block("F")
 Sys.time()
 
-test <- merge(block_b, block_c, add.cell.ids = c("b", "c"))
+# copilot says merge could take 10s of minutes per pair of blocks
+# test <- merge(block_b, block_c, add.cell.ids = c("b", "c"))
 ```
 
 
