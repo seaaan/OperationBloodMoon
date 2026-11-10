@@ -7,54 +7,75 @@ date: "2026-10-26"
 
 
 library(Seurat)
-library(future)
-plan("multisession", workers = 4)
+#library(future)
+#plan("multisession", workers = 4)
 library(ggplot2)
 library(here)
-library(sf)
+#library(sf)
+library(tidyverse)
 
 options(future.globals.maxSize = 10 * 1024^3)
 ```
 
-
-
-
-
 ```{r}
+# Commented out because reading from rds (below) is much faster
+# 
+# read_block <- function(path, block) {
+#     # Load the Xenium data
+#     xenium.obj <- LoadXenium(path, fov = block, segmentations = "cell")
+#     
+#     # remove cells with 0 counts
+#     xenium.obj <- subset(xenium.obj, subset = nCount_Xenium > 0)
+#     
+#     xenium.obj
+# }
+# 
+# block_a_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
+# 
+# block_b_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103582__JL4_B__20260731__175202/"
+# 
+# block_a_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
+# 
+# block_c_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks C and D/20260811__190356__SR26-0828_Lund_XeniumV3_2607/output-XETG00440__0103097__JL3_C__20260811__190405/"
+# 
+# block_d_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks C and D/20260811__190356__SR26-0828_Lund_XeniumV3_2607/output-XETG00440__0103004__JL4_D__20260811__190405/"
+# 
+# block_e_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks E and F/20260814__175243__SR26-0828_Lund_XeniumV4_2607/output-XETG00440__0103671__JL7_E__20260814__175253/"
+# 
+# block_f_path <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks E and F/20260814__175243__SR26-0828_Lund_XeniumV4_2607/output-XETG00440__0103670__JL8_F__20260814__175253/"
+# 
+# block_a <- read_block(block_a_path, "BlockA")
+# block_b <- read_block(block_b_path, "BlockB")
+# block_c <- read_block(block_c_path, "BlockC")
+# block_d <- read_block(block_d_path, "BlockD")
+# block_e <- read_block(block_e_path, "BlockE")
+# block_f <- read_block(block_f_path, "BlockF")
+# 
+# save_rds <- function(block, name) {
+#     write_rds(block, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/", name, ".rds"))
+# }
+# 
+# save_rds(block_a, "BlockA")
+# save_rds(block_b, "BlockB")
+# save_rds(block_c, "BlockC")
+# save_rds(block_d, "BlockD")
+# save_rds(block_e, "BlockE")
+# save_rds(block_f, "BlockF")
 
-# here::here sets the wd to be Xenium/R so I need to go up a level to get to dat
-
-read_block <- function(path, block) {
-    # Load the Xenium data
-    xenium.obj <- LoadXenium(path, fov = block, segmentations = "cell")
-    
-    # remove cells with 0 counts
-    xenium.obj <- subset(xenium.obj, subset = nCount_Xenium > 0)
-    
-    xenium.obj
+load_raw_block <- function(block) {
+    read_rds(paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/Block", block, ".rds"))
 }
 
-block_a <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
+Sys.time()
+block_a <- load_raw_block("A")
+block_b <- load_raw_block("B")
+block_c <- load_raw_block("C")
+block_d <- load_raw_block("D")
+block_e <- load_raw_block("E")
+block_f <- load_raw_block("F")
+Sys.time()
 
-block_b <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103582__JL4_B__20260731__175202/"
-
-block_a <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks A and B/20260731__175152__SR26-0828_Lund_XeniumV2_2607/output-XETG00440__0103580__JL3_A__20260731__175201"
-
-block_c <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks C and D/20260811__190356__SR26-0828_Lund_XeniumV3_2607/output-XETG00440__0103097__JL3_C__20260811__190405/"
-
-block_d <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks C and D/20260811__190356__SR26-0828_Lund_XeniumV3_2607/output-XETG00440__0103004__JL4_D__20260811__190405/"
-
-block_e <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks E and F/20260814__175243__SR26-0828_Lund_XeniumV4_2607/output-XETG00440__0103671__JL7_E__20260814__175253/"
-
-block_f <- "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/raw/Blocks E and F/20260814__175243__SR26-0828_Lund_XeniumV4_2607/output-XETG00440__0103670__JL8_F__20260814__175253/"
-
-test_a <- read_block(block_a, "BlockA")
-
-test_b <- read_block(block_b, "BlockB")
-
-xenium.obj <- merge(test_a, test_b, 
-      add.cell.ids = c("BlockA", "BlockB"))
-
+test <- merge(block_b, block_c, add.cell.ids = c("b", "c"))
 ```
 
 
