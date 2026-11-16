@@ -157,13 +157,120 @@ table(xenium.obj$seurat_clusters, xenium.obj$niches)
 
 ```{r}
 # read in file exported from 10X explorer containing the names of the cells on interest
-cells <- read.csv("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/coords/AvagF_cells_stats.csv", skip = 2)
+block_c_cellIDs_files <-list.files("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/xenium_cell_stats/block_c", full.names = TRUE)
 
-# subset to just those cells
-block_a_vag_follicular <- subset(test_a, cells = cells$Cell.ID)
+block_c_cellIDs_dfs<-lapply(block_c_cellIDs_files, read_csv, skip =2)
+
+names(block_c_cellIDs_dfs) <-block_c_cellIDs_files
+
+block_c_cellIDs<-bind_rows(block_c_cellIDs_dfs, .id = "file") %>%
+    mutate(file = str_replace(file, "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/xenium_cell_stats/block_c/", "")) %>%
+    separate(file, sep = "_", into = c("block", "phase", "tissue"), extra = "drop") %>%
+    select(1:4) %>%
+    as.data.frame(.)
+
+#The cell ids need to be rownames so we can use addmetadata
+rownames(block_c_cellIDs)<-block_c_cellIDs$`Cell ID`
+```
+
+```{r}
+#make the cell ID info we just made into metadata for the block c seurat object.
+
+
+block_c<-AddMetaData(block_c, block_c_cellIDs)
+
+
+
+
+block_c_rect_follicular <- subset(block_c, subset = phase == "F" & tissue == "rect")
+#The 779 it removed are ok, likely dots in the image that we didn't capture in xenium explorer
+
 # but when you plot it, it still shows the other cells...
-ImageDimPlot(block_a_vag_follicular, molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+ImageDimPlot(block_c_rect_follicular, molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+```
 
+
+```{r}
+AddCellIDs<-function(block){
+    
+files<-list.files(paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/xenium_cell_stats/block_",block), full.names = TRUE)
+
+dfs<-lapply(files, read_csv, skip =2)
+
+names(dfs) <-files
+
+cellIDs<-bind_rows(dfs, .id = "file") %>%
+    mutate(file = str_replace(file, "/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/xenium_cell_stats/block_./", "")) %>%
+    separate(file, sep = "_", into = c("block", "phase", "tissue"), extra = "drop") %>%
+    select(1:4) %>%
+    as.data.frame(.)
+
+
+#The cell ids need to be rownames so we can use addmetadata
+rownames(cellIDs)<-cellIDs$`Cell ID`
+
+#return the dataframe
+cellIDs
+                  
+}
+
+```
+
+
+```{r}
+# remember that sample A L vag is missing, it was just some tiny shreds on the slide :(
+block_a_cellIDs<-AddCellIDs(block = "a")
+block_b_cellIDs<-AddCellIDs(block = "b")
+block_c_cellIDs<-AddCellIDs(block = "c")
+block_d_cellIDs<-AddCellIDs(block = "d")
+block_e_cellIDs<-AddCellIDs(block = "e")
+block_f_cellIDs<-AddCellIDs(block = "f")
+
+# Use our AddMetaData function to add the cellIDs, phase and tissue to the seurat objects for each block
+block_a<-AddMetaData(block_a, block_a_cellIDs)
+block_b<-AddMetaData(block_b, block_b_cellIDs)
+block_c<-AddMetaData(block_c, block_c_cellIDs)
+block_d<-AddMetaData(block_d, block_d_cellIDs)
+block_e<-AddMetaData(block_e, block_e_cellIDs)
+block_f<-AddMetaData(block_f, block_f_cellIDs)
+
+
+#Save these as rds to load next time
+# use a function
+save_rds <- function(block, name) {
+    write_rds(block, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/", name, "_with_cellIDs.rds"))
+}
+
+save_rds(block_a, "BlockA")
+save_rds(block_b, "BlockB")
+save_rds(block_c, "BlockC")
+save_rds(block_d, "BlockD")
+save_rds(block_e, "BlockE")
+save_rds(block_f, "BlockF")
+```
+
+```{r}
+
+
+#Make some images of the data above to check that we are capturing the correct parts of the blocks
+
+
+#Change the idents for block_a so that when we plot it, the two phases will be differentiated by color
+#This is the same as doing group_by inside image dimplot
+Idents(block_a)<-block_a@meta.data$phase
+
+ImageDimPlot(block_a, molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+
+#we can use SPLIT by to make separate images for the splitting factor
+
+ImageDimPlot(block_a, nmols = 1000, split.by = "tissue")
+
+
+# STOPPED HERE 20261116, see progress notes for next steps to do
+
+```
+
+```{r}
 # this shows that the 
 test_a$InOrOut <- as.numeric(ifelse(colnames(test_a) %in% cells$Cell.ID, 1, 2))
 ImageFeaturePlot(test_a, features = 'InOrOut', nmols = 1000)
@@ -174,7 +281,7 @@ xenium.obj <- RunUMAP(xenium.obj, dims = 1:30)
 xenium.obj <- FindNeighbors(xenium.obj, reduction = "pca", dims = 1:30)
 xenium.obj <- FindClusters(xenium.obj, resolution = 0.3)
 
-
+```
 
 ```
 
