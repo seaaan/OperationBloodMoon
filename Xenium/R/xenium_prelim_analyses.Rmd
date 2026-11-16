@@ -180,8 +180,6 @@ rownames(block_c_cellIDs)<-block_c_cellIDs$`Cell ID`
 block_c<-AddMetaData(block_c, block_c_cellIDs)
 
 
-
-
 block_c_rect_follicular <- subset(block_c, subset = phase == "F" & tissue == "rect")
 #The 779 it removed are ok, likely dots in the image that we didn't capture in xenium explorer
 
