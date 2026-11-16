@@ -6,6 +6,17 @@ output: html_document
 ---
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
+#2026-11-16
+We figured out last time how to subset the blocks by cell ID (get the cell IDs by creating ROI in Xenium explorer and download cell stats as csv)
+We all got the cell IDs for the ROIs of our respective blocks and uploaded the csvs to Hyak
+We're adding the phase, tissue info to object metadata for each block
+We wrote a function to read in the CellIDs for each block, phase, tissue
+Tested it on block D
+Running it on all the other blocks
+Can make an ImageDimPlot without any molecules to just show the tissues of interest to confirm that the cells are assigned to tissue/phase correctly
+Now what do we want to do? We talked through the basic analysis workflow (FindVariableFeatures, ScaleData, RunPCA, FindNeighbors, FindClusters, RunUMAP). We'll want to do this workflow for each TISSUE (which will require some object rearranging - i.e. merge all the blocks together, then subset the skin, vag, rect). 
+Then we want to find differentially expressed genes (FindMarkers) between F and L phase for each tissue. (prioritize this)
+Can also FindAllMarkers (characteristic genes of each cluster) and annotate the clusters - does the cell composition (% immune, % epithelial or whatever) change between phase? 
 #2026-11-09
 Main goal currently is to separate the the blocks by tissue/phase.
 SMH driving: making a function to read in all the blocks (called read_block)
