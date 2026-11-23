@@ -6,6 +6,31 @@ output: html_document
 ---
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
+
+# 2026-11-23
+
+### File permission woes
+
+* Hyak IT offered two options for our file permission woes
+        * Each time we run a shell script or command to change the permission structure. This wouldn't work with uploads through the web interface or probably with RStudio OnDemand
+        * They can configure the directory such that all files created within it have the appropriate permissions. As a test, they created a sub-directory called "shared" that has this configuration. To be safe, they didn't apply it to the full directory.
+        
+We discussed and think the best option is to request that they change the top directory (OperationBloodMoon) to have that configuration. 
+
+### Continued Xenium analysis
+
+Last time, added metadata to all blocks (identifying which cells correspond to which phase/tissue/donor).
+
+This time, we will load those files, subset by tissue type, then combine by tissue type (so we have one rectum object, one vagina object, one skin object)
+
+We found out about `Seurat::SplitObject` which is perfect for creating 3 separate objects by tissue type out of our block objects.
+
+We created a list for each tissue type with one element per block.
+
+We set up code to merge them into a single objects, one per tissue type. 
+
+We tested the code using a small subsetted object and it worked.
+
 #2026-11-16
 We figured out last time how to subset the blocks by cell ID (get the cell IDs by creating ROI in Xenium explorer and download cell stats as csv)
 We all got the cell IDs for the ROIs of our respective blocks and uploaded the csvs to Hyak
