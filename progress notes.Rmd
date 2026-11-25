@@ -6,6 +6,11 @@ output: html_document
 ---
 
 This is in REVERSE CHRONOLOGICAL order because Claire likes it that way
+# 2026-11-24 Claire messing around for lab meeting presentation
+I was able to read back in the rect object containing all of our rectal data and I could make a ImageDimPlot colored by Phase that seemed to only show the rectal data. But when I tried to show specific molecules, it did the thing where it is also seemingly showing the skin and vag tissue too.
+
+I moved on and did SCTransform for the rect object but didn't get farther, I don't think I understand what's happening after that. I tried to plot my variable features but that doesn't work for an SCT assay which is what I have after doing SCTransform.
+
 
 # 2026-11-23
 
