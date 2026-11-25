@@ -88,6 +88,17 @@ ggsave(here("Xenium", "plots", "vln_nfeature_ncount.png"))
 
 ImageDimPlot(xenium.obj, fov = "fov", molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
 ggsave(here("Xenium", "plots", "our_first_image_dimplot.png"))
+
+
+
+VlnPlot(block_a, features = c("nFeature_Xenium", "nCount_Xenium"), ncol = 2, pt.size = 0)
+
+
+ImageDimPlot(block_a, fov = "BlockA", molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+
+# There were no probes for mitochondrial genes in our panel so we don't do any QC on those
+
+
 ```
 
 
@@ -121,6 +132,7 @@ ImageDimPlot(xenium.obj, fov = "morezoom", axes = TRUE, border.color = "white", 
     coord.fixed = FALSE, molecules = c("KRT18", "PGR", "ESR2"), nmols = 1000)
 ggsave(here("Xenium", "plots", "our_first_zoomed_image_dimplot.png"))
 ```
+
 ```{r}
 xenium.obj <- SCTransform(xenium.obj, assay = "Xenium")
 xenium.obj <- RunPCA(xenium.obj, npcs = 30, features = rownames(xenium.obj))
@@ -264,70 +276,87 @@ ImageDimPlot(block_a, molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 10
 ImageDimPlot(block_a, nmols = 1000, split.by = "tissue")
 
 
-# STOPPED HERE 20261116, see progress notes for next steps to do
 
 ```
 
 ```{r}
 
-# get the seurat obj .rds that we made before with the cellids
+# # get the seurat obj .rds that we made before with the cellids
+# 
+# 
+# #get a list of those rds files
+# blocks_with_cellIDs<-list.files("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds", pattern = "with_cellIDs", recursive =  TRUE, full.names = TRUE)
+# 
+# #read them in as a list
+# blocks_with_cellIDs<-lapply(blocks_with_cellIDs, read_rds)
+# 
+# 
+# # Function to subset our blocks with cellIDs by tissue
+# 
+# SubsetByTissue<-function(seurat_with_cellIDs){
+#    SplitObject(seurat_with_cellIDs, split.by = "tissue")
+# }
+# 
+# #now we have a list of lists omg! There is a list of seurat objects where the elemnts are the blocks and in each of those is a list of sub-objects divided by tissue. So block A has a list of obj called vag, rect and skin each of which are seurat objects themselves.
+# block_tissue_list<-lapply(blocks_with_cellIDs, SubsetByTissue)
+# 
+# #using map like this means "go into my list called block_tissue_list" and get the element out called skin
+# skin<-map(block_tissue_list, "skin")
+# 
+# vag<-map(block_tissue_list, "vag")
+# 
+# rect<-map(block_tissue_list, "rect")
+# 
+# #now we have 3 lists: skin, vag and rect and each of those has a list of 6 seurat objects originating from the 6 blocks.
+# 
+# #To get a single seurat object PER TISSUE TYPE we need to merge the 6 elements
+# 
+# # take my skin list, use this 1, -1 thing to merge all the list elements and say that we want to append our cell ids with "blockX" where X is the block identifier
+# 
+# skin<-merge(
+#     skin[[1]],
+#     skin[-1],
+#     add.cell.ids = paste0("block", LETTERS[1:6])
+# )
+# 
+# write_rds(skin, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/", "all_skin_object.rds"))
+# 
+# 
+# vag<-merge(
+#     vag[[1]],
+#     vag[-1],
+#     add.cell.ids = paste0("block", LETTERS[1:6])
+# )
+# 
+# write_rds(vag, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/", "all_vag_object.rds"))
+# 
+# 
+# 
+# rect<-merge(
+#     rect[[1]],
+#     rect[-1],
+#     add.cell.ids = paste0("block", LETTERS[1:6])
+# )
+# 
+# write_rds(rect, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/", "all_rect_object.rds"))
 
 
-#get a list of those rds files
-blocks_with_cellIDs<-list.files("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds", pattern = "with_cellIDs", recursive =  TRUE, full.names = TRUE)
+# Read in the results of what we did above that was saved as rds objects
 
-#read them in as a list
-blocks_with_cellIDs<-lapply(blocks_with_cellIDs, read_rds)
+rect<-read_rds("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/all_rect_object.rds")
 
 
-# Function to subset our blocks with cellIDs by tissue
+#Set the idents for this object to phase so we get one color for F and one for L in the plots
+Idents(rect)<-rect@meta.data$phase
 
-SubsetByTissue<-function(seurat_with_cellIDs){
-   SplitObject(seurat_with_cellIDs, split.by = "tissue")
-}
-
-#now we have a list of lists omg! There is a list of seurat objects where the elemnts are the blocks and in each of those is a list of sub-objects divided by tissue. So block A has a list of obj called vag, rect and skin each of which are seurat objects themselves.
-block_tissue_list<-lapply(blocks_with_cellIDs, SubsetByTissue)
-
-#using map like this means "go into my list called block_tissue_list" and get the element out called skin
-skin<-map(block_tissue_list, "skin")
-
-vag<-map(block_tissue_list, "vag")
-
-rect<-map(block_tissue_list, "rect")
-
-#now we have 3 lists: skin, vag and rect and each of those has a list of 6 seurat objects originating from the 6 blocks.
-
-#To get a single seurat object PER TISSUE TYPE we need to merge the 6 elements
-
-# take my skin list, use this 1, -1 thing to merge all the list elements and say that we want to append our cell ids with "blockX" where X is the block identifier
-
-skin<-merge(
-    skin[[1]],
-    skin[-1],
-    add.cell.ids = paste0("block", LETTERS[1:6])
-)
-
-write_rds(skin, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds", "all_skin_object.rds"))
+#Each block's data is an FOV within the rect object. I need to specify that I want to see all these FOVs in my image dim plot
+ImageDimPlot(rect, fov = c("BlockA", "BlockB", "BlockC", "BlockD", "BlockE", "BlockF"), nmols = 1000, border.size = 0.1)
 
 
-vag<-merge(
-    vag[[1]],
-    vag[-1],
-    add.cell.ids = paste0("block", LETTERS[1:6])
-)
+#When I do this, I get that same problem again where the molecules are shown for ALL the tissue types even though I'm only looking at the rectal data. I don't even know where it got the information to plot the other tissue types!
 
-write_rds(vag, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds", "all_vag_object.rds"))
-
-
-
-rect<-merge(
-    rect[[1]],
-    rect[-1],
-    add.cell.ids = paste0("block", LETTERS[1:6])
-)
-
-write_rds(rect, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds", "all_rect_object.rds"))
+#I used group.by = NA to just show the molecules but NOT colors by phase. Apparently that will make it not plot the idents?
+ImageDimPlot(rect, fov = c("BlockA", "BlockB", "BlockC", "BlockD", "BlockE", "BlockF"),molecules = c("ISG15","SPIB"),group.by = NA, nmols = 1000)
 
 
 ```
@@ -337,8 +366,18 @@ write_rds(rect, paste0("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds
 test_a$InOrOut <- as.numeric(ifelse(colnames(test_a) %in% cells$Cell.ID, 1, 2))
 ImageFeaturePlot(test_a, features = 'InOrOut', nmols = 1000)
 
-xenium.obj <- SCTransform(block_a_vag_follicular, assay = "Xenium")
-xenium.obj <- RunPCA(xenium.obj, npcs = 30, features = rownames(xenium.obj))
+#SCtransform is an alternative to FindVariableFeatures. I.e. you don't do both
+rect <- SCTransform(rect, assay = "Xenium")
+
+#this is apparently an SCT object now and you can't do this plot for that.
+VariableFeaturePlot(rect)
+
+#I'm supposed to do SplitObject and then be able to show the variable features?
+test<-SplitObject(rect, split.by = "phase")
+
+
+
+rect <- RunPCA(rect, npcs = 30, features = rownames(rect))
 xenium.obj <- RunUMAP(xenium.obj, dims = 1:30)
 xenium.obj <- FindNeighbors(xenium.obj, reduction = "pca", dims = 1:30)
 xenium.obj <- FindClusters(xenium.obj, resolution = 0.3)
