@@ -1,0 +1,73 @@
+---
+title: "Xenium practice for lab meeting"
+output: html_document
+date: "2026-11-25"
+---
+```{r}
+
+
+library(Seurat)
+#library(future)
+#plan("multisession", workers = 4)
+library(ggplot2)
+library(here)
+#library(sf)
+library(tidyverse)
+
+options(future.globals.maxSize = 50 * 1024^3)
+```
+
+```{r}
+
+block_b<-read_rds("/mmfs1/gscratch/iscrm/OperationBloodMoon/Xenium/data/rds/BlockB_with_cellIDs.rds")
+
+#subset to just rectal data
+
+rectB<-subset(block_b, subset = tissue == "rect")
+
+VlnPlot(rectB, features = c("nFeature_Xenium", "nCount_Xenium"), ncol = 2, pt.size = 0)
+ggsave(here("Xenium", "plots", "nFeature_nCount_rectB.png"))
+
+ImageDimPlot(rectB, molecules = c("ISG15", "KRT18", "ESR2", "EGR"), nmols = 1000)
+
+ggsave(here("Xenium", "plots", "ImageDimPlot_rectB.png"))
+
+rectB <- SCTransform(rectB, assay = "Xenium")
+
+rectB<-RunPCA(rectB)
+
+ElbowPlot(rectB)
+
+ElbowPlot(rectB, ndims = 30)
+
+ElbowPlot(rectB, ndims = 50)
+
+
+Idents(rectB)<-"phase"
+rectB<-FindNeighbors(rectB, dims = 1:25)
+
+# OPTIONAL RIGHT NOW:default is Louvain algo, This is OPTIONAL at this point, you don't need to find clusters to be able to get the UMAP embeddings and make the UMAP plot
+rectB<-FindClusters(rectB)
+
+#This takes information from the graph made in FindNeighbors and gets embeddings for each cell, coordinates of where they are in UMAP space, using the first 10 PCs
+rectB<-RunUMAP(rectB, reduction = "pca", dims = 1:25)
+
+Idents(rectB)<-"phase"
+
+#I want to make the UMAP with all cells one color, just to see the structure
+rectB$plot_group <- "all_cells"
+DimPlot(rectB, reduction = "umap", group.by = "plot_group",
+        cols = "grey")
+
+DimPlot(rectB, reduction = "umap", group.by = "phase", cols = c("orange", "blue"))
+
+ggsave(here("Xenium", "plots", "DimPlot_UMAP_rectB.png"))
+
+FeaturePlot(rectB, c("KRT18", "ESR2", "ISG15"))
+
+DotPlot(rectB, c( "ESR2", "ISG15"))
+
+
+
+rectB<-FindClusters(rectB, resolution = c(0.1, 0.25, .5, 1, 1.5, 2), algorithm = 1)
+```
